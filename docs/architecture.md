@@ -7,7 +7,8 @@ component boundaries, data flow, concurrency model, cache ownership, and failure
 semantics. Product requirements belong in [product-spec.md](product-spec.md),
 wire-level behavior in [torznab-contract.md](torznab-contract.md), upstream facts
 in [integrations/aniliberty.md](integrations/aniliberty.md), and parsing rules in
-[title-normalization.md](title-normalization.md). It is not a work log.
+[title-normalization.md](title-normalization.md). Release tags and image
+publication belong in [releases.md](releases.md). It is not a work log.
 
 **Status:** proposed architecture for the first implementation
 

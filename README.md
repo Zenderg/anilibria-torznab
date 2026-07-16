@@ -66,6 +66,8 @@ evidence and compatibility notes behind this choice.
   XML mapping, and errors
 - [Title normalization](docs/title-normalization.md) — season and episode
   parsing rules
+- [Release workflow](docs/releases.md) — version tags, validation gates, and
+  container image publication
 
 User-facing deployment and Prowlarr setup instructions will be added here once
 the container and HTTP API exist and have been verified together. Until then,

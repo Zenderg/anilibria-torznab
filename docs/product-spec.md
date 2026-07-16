@@ -7,8 +7,9 @@ externally observable behavior, configuration contract, and release criteria.
 Implementation structure belongs in [architecture.md](architecture.md), exact
 protocol mapping belongs in [torznab-contract.md](torznab-contract.md), upstream
 facts belong in [integrations/aniliberty.md](integrations/aniliberty.md), and
-parsing rules belong in [title-normalization.md](title-normalization.md).
-Temporary implementation plans and work logs do not belong here.
+parsing rules belong in [title-normalization.md](title-normalization.md). Release
+versioning and image publication belong in [releases.md](releases.md). Temporary
+implementation plans and work logs do not belong here.
 
 **Status:** implementation baseline, pre-release
 

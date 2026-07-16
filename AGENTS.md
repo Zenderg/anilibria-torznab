@@ -12,6 +12,7 @@ architecture belong in the linked documents rather than in this file.
 - `docs/integrations/aniliberty.md` defines the verified upstream API contract.
 - `docs/torznab-contract.md` defines the HTTP/XML protocol contract.
 - `docs/title-normalization.md` defines query, season, and episode parsing.
+- `docs/releases.md` defines release versions, validation, and image publication.
 
 The repository is currently in the design phase. The specifications describe
 the implementation baseline, not already-shipped behavior. Do not add unverified
