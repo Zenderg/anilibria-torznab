@@ -1,3 +1,24 @@
+# Agent instructions
+
+Purpose: this file defines repository-specific working rules and routes agents
+to durable project documentation. Product behavior, external contracts, and
+architecture belong in the linked documents rather than in this file.
+
+## Project sources of truth
+
+- `README.md` is the public, user-facing project overview.
+- `docs/product-spec.md` defines scope, configuration, and release criteria.
+- `docs/architecture.md` defines runtime boundaries and failure semantics.
+- `docs/integrations/aniliberty.md` defines the verified upstream API contract.
+- `docs/torznab-contract.md` defines the HTTP/XML protocol contract.
+- `docs/title-normalization.md` defines query, season, and episode parsing.
+
+The repository is currently in the design phase. The specifications describe
+the implementation baseline, not already-shipped behavior. Do not add unverified
+run or deployment instructions to the public README.
+
+## Working rules
+
 - Work only on the main branch.
 - Do not create or switch to new branches unless the user explicitly asks for a new branch.
 - Use subagents at your discretion whenever they are useful.
