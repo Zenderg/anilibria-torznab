@@ -1,0 +1,334 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions: {}
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      build_date: ${{ steps.version.outputs.build_date }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        name: Validate release tag and derive build metadata
+        shell: bash
+        run: |
+          tag=${GITHUB_REF_NAME}
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid stable release tag: $tag" >&2
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "$tag")" != "tag" ]]; then
+            echo "release tag must be annotated: $tag" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          commit=$(git rev-parse "${tag}^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main
+          build_date=$(git show --no-patch --format=%cI "$commit")
+
+          {
+            echo "version=${tag#v}"
+            echo "commit=$commit"
+            echo "build_date=$build_date"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Quality gates
+        run: |
+          test -z "$(gofmt -l .)"
+          go test ./...
+          go test -race ./...
+          go vet ./...
+      - name: Validate release Compose file
+        env:
+          API_KEY: release-validation-key
+          IMAGE: ghcr.io/zenderg/anilibria-torznab:validation
+        run: docker compose -f compose.release.yaml config --quiet
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.verify.outputs.digest }}
+    env:
+      IMAGE_NAME: ghcr.io/zenderg/anilibria-torznab
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: existing
+        name: Detect an existing immutable version
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          version_ref="${IMAGE_NAME}:${GITHUB_REF_NAME}"
+          if docker buildx imagetools inspect "$version_ref" >/dev/null 2>&1; then
+            digest=$(docker buildx imagetools inspect "$version_ref" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
+            bare_digest=$(docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
+            if [[ -z "$digest" || "$digest" != "$bare_digest" ]]; then
+              echo "existing immutable version tags are incomplete or disagree" >&2
+              exit 1
+            fi
+
+            raw=$(docker buildx imagetools inspect "${IMAGE_NAME}@${digest}" --raw)
+            amd64=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty' <<< "$raw")
+            arm64=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")][0].digest // empty' <<< "$raw")
+            if [[ -z "$amd64" || -z "$arm64" ]]; then
+              echo "existing version is not the required amd64/arm64 image index" >&2
+              exit 1
+            fi
+
+            {
+              echo "found=true"
+              echo "digest=$digest"
+              echo "amd64=$amd64"
+              echo "arm64=$arm64"
+            } >> "$GITHUB_OUTPUT"
+            echo "version image already exists; it will be verified but never overwritten"
+            exit 0
+          fi
+
+          if docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "bare version tag exists without the v-prefixed immutable tag" >&2
+            exit 1
+          fi
+          echo "found=false" >> "$GITHUB_OUTPUT"
+
+      - id: build_amd64
+        if: steps.existing.outputs.found != 'true'
+        name: Build and push linux/amd64 by digest
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ needs.validate.outputs.commit }}
+            BUILD_DATE=${{ needs.validate.outputs.build_date }}
+          provenance: mode=max
+          sbom: true
+
+      - id: amd64
+        name: Select the exact linux/amd64 digest
+        env:
+          EXISTING_DIGEST: ${{ steps.existing.outputs.amd64 }}
+          BUILT_DIGEST: ${{ steps.build_amd64.outputs.digest }}
+        shell: bash
+        run: |
+          digest=${EXISTING_DIGEST:-$BUILT_DIGEST}
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid amd64 digest: $digest" >&2
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke the exact linux/amd64 image through Compose
+        env:
+          API_KEY: release-test-key
+          AMD64_DIGEST: ${{ steps.amd64.outputs.digest }}
+        shell: bash
+        run: |
+          export IMAGE="${IMAGE_NAME}@${AMD64_DIGEST}"
+          compose=(docker compose --project-name anilibria-release-smoke -f compose.release.yaml)
+          cleanup() {
+            "${compose[@]}" logs
+            "${compose[@]}" down --remove-orphans
+          }
+          trap cleanup EXIT
+
+          "${compose[@]}" config --quiet
+          "${compose[@]}" pull
+          test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = "65532:65532"
+          "${compose[@]}" up --detach --no-build
+
+          id=$("${compose[@]}" ps --quiet anilibria-torznab)
+          test -n "$id"
+          test "$(docker inspect "$id" --format '{{.HostConfig.ReadonlyRootfs}}')" = "true"
+          for attempt in $(seq 1 60); do
+            status=$(docker inspect "$id" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}')
+            case "$status" in
+              healthy)
+                exit 0
+                ;;
+              unhealthy|missing)
+                echo "container health status: $status" >&2
+                exit 1
+                ;;
+            esac
+            sleep 1
+          done
+
+          echo "container did not become healthy" >&2
+          exit 1
+
+      - id: build_arm64
+        if: steps.existing.outputs.found != 'true'
+        name: Build and push linux/arm64 by digest
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          platforms: linux/arm64
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ needs.validate.outputs.commit }}
+            BUILD_DATE=${{ needs.validate.outputs.build_date }}
+          provenance: mode=max
+          sbom: true
+
+      - id: platforms
+        name: Select exact platform digests
+        env:
+          AMD64_DIGEST: ${{ steps.amd64.outputs.digest }}
+          EXISTING_ARM64_DIGEST: ${{ steps.existing.outputs.arm64 }}
+          BUILT_ARM64_DIGEST: ${{ steps.build_arm64.outputs.digest }}
+        shell: bash
+        run: |
+          arm64=${EXISTING_ARM64_DIGEST:-$BUILT_ARM64_DIGEST}
+          if [[ ! "$arm64" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid arm64 digest: $arm64" >&2
+            exit 1
+          fi
+          {
+            echo "amd64=$AMD64_DIGEST"
+            echo "arm64=$arm64"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create and tag the multi-platform image index once
+        if: steps.existing.outputs.found != 'true'
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          AMD64_DIGEST: ${{ steps.platforms.outputs.amd64 }}
+          ARM64_DIGEST: ${{ steps.platforms.outputs.arm64 }}
+        run: |
+          if docker buildx imagetools inspect "${IMAGE_NAME}:${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+             docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "a version tag appeared after preflight; refusing to overwrite it" >&2
+            exit 1
+          fi
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:${GITHUB_REF_NAME}" \
+            --tag "${IMAGE_NAME}:${VERSION}" \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}@${AMD64_DIGEST}" \
+            "${IMAGE_NAME}@${ARM64_DIGEST}"
+
+      - id: verify
+        name: Verify tags, digest, and platforms
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          EXISTING: ${{ steps.existing.outputs.found }}
+        shell: bash
+        run: |
+          digest_of() {
+            docker buildx imagetools inspect "$1" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}'
+          }
+
+          version_digest=$(digest_of "${IMAGE_NAME}:${GITHUB_REF_NAME}")
+          bare_digest=$(digest_of "${IMAGE_NAME}:${VERSION}")
+          if [[ -z "$version_digest" || "$version_digest" != "$bare_digest" ]]; then
+            echo "published version tags do not resolve to one image index" >&2
+            exit 1
+          fi
+          if [[ "$EXISTING" != "true" ]]; then
+            latest_digest=$(digest_of "${IMAGE_NAME}:latest")
+            if [[ "$version_digest" != "$latest_digest" ]]; then
+              echo "latest does not resolve to the new stable image index" >&2
+              exit 1
+            fi
+          fi
+
+          raw=$(docker buildx imagetools inspect "${IMAGE_NAME}@${version_digest}" --raw)
+          platforms=$(jq -r '[.manifests[] | select(.platform.os == "linux") | (.platform.os + "/" + .platform.architecture)] | unique | sort | join(",")' <<< "$raw")
+          if [[ "$platforms" != "linux/amd64,linux/arm64" ]]; then
+            echo "unexpected image platforms: $platforms" >&2
+            exit 1
+          fi
+          echo "digest=$version_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify anonymous GHCR pull
+        env:
+          IMAGE_DIGEST: ${{ steps.verify.outputs.digest }}
+        run: |
+          docker logout ghcr.io
+          docker pull "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+  draft_release:
+    needs: [validate, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Create the draft GitHub Release once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_NAME: ghcr.io/zenderg/anilibria-torznab
+          IMAGE_DIGEST: ${{ needs.publish.outputs.digest }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release already exists; preserving its notes"
+            exit 0
+          fi
+
+          notes=$(mktemp)
+          {
+            echo "## Container image"
+            echo
+            echo '```text'
+            echo "${IMAGE_NAME}:${GITHUB_REF_NAME}"
+            echo '```'
+            echo
+            echo "Image-index digest: \`${IMAGE_DIGEST}\`"
+            echo
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`."
+            echo
+            echo "## Docker Compose"
+            echo
+            echo '```yaml'
+            sed "s|image: \${IMAGE:?set IMAGE to a released image reference}|image: ${IMAGE_NAME}:${GITHUB_REF_NAME}|" compose.release.yaml
+            echo '```'
+            echo
+            echo "Rollback: replace the image tag with the previous released version and recreate the service. No persistent data migration is required."
+          } > "$notes"
+
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$notes" \
+            --verify-tag

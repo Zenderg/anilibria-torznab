@@ -11,9 +11,9 @@ parsing rules belong in [title-normalization.md](title-normalization.md). Releas
 versioning and image publication belong in [releases.md](releases.md). Temporary
 implementation plans and work logs do not belong here.
 
-**Status:** implementation baseline, pre-release
+**Status:** implemented for `v1.0.0`
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 The terms **MUST**, **SHOULD**, and **MAY** are normative.
 
@@ -298,13 +298,12 @@ The release is ready only when all of the following are true:
 10. README deployment, upgrade, rollback, Prowlarr setup, and curl examples have
     been verified against the shipped container rather than written in advance.
 
-## Compatibility gates still requiring implementation evidence
+## Compatibility evidence
 
-These are not open product decisions, but documentation MUST NOT claim them as
-verified until evidence is committed:
-
-- a real Prowlarr Generic Torznab test and search;
-- a real Sonarr handoff of one magnet result;
-- a captured singleton-object response from the upstream, if one can still be
-  observed (the decoder requirement remains for Jackett compatibility); and
-- final timeout behavior under a full ten-release rate-limited fan-out.
+The real Prowlarr Generic Torznab test and search, real Sonarr-to-Transmission
+magnet handoff, container runtime checks, and final timeout behavior under a
+full ten-release rate-limited fan-out are recorded in
+[compatibility.md](compatibility.md). The upstream returned arrays during live
+validation; a current singleton-object response was not observed, so the
+decoder requirement remains covered hermetically rather than claimed as live
+evidence.

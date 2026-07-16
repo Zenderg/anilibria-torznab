@@ -1,0 +1,90 @@
+[
+  {
+    "hash": "1111111111111111111111111111111111111111",
+    "size": 1001,
+    "label": "TV 1080p",
+    "magnet": "magnet:?xt=urn:btih:1111111111111111111111111111111111111111",
+    "seeders": 1,
+    "leechers": 0,
+    "completed_times": 1,
+    "updated_at": "2026-07-16T10:01:00Z",
+    "release": { "id": 1001, "type": { "value": "TV" }, "year": 2026, "name": { "main": "TV Example" }, "alias": "tv-example" }
+  },
+  {
+    "hash": "2222222222222222222222222222222222222222",
+    "size": 1002,
+    "label": "ONA 1080p",
+    "magnet": "magnet:?xt=urn:btih:2222222222222222222222222222222222222222",
+    "seeders": 2,
+    "leechers": 0,
+    "completed_times": 2,
+    "updated_at": "2026-07-16T10:02:00Z",
+    "release": { "id": 1002, "type": { "value": "ONA" }, "year": 2026, "name": { "main": "ONA Example" }, "alias": "ona-example" }
+  },
+  {
+    "hash": "3333333333333333333333333333333333333333",
+    "size": 1003,
+    "label": "WEB 1080p",
+    "magnet": "magnet:?xt=urn:btih:3333333333333333333333333333333333333333",
+    "seeders": 3,
+    "leechers": 0,
+    "completed_times": 3,
+    "updated_at": "2026-07-16T10:03:00Z",
+    "release": { "id": 1003, "type": { "value": "WEB" }, "year": 2026, "name": { "main": "WEB Example" }, "alias": "web-example" }
+  },
+  {
+    "hash": "4444444444444444444444444444444444444444",
+    "size": 1004,
+    "label": "OVA 1080p",
+    "magnet": "magnet:?xt=urn:btih:4444444444444444444444444444444444444444",
+    "seeders": 4,
+    "leechers": 0,
+    "completed_times": 4,
+    "updated_at": "2026-07-16T10:04:00Z",
+    "release": { "id": 1004, "type": { "value": "OVA" }, "year": 2026, "name": { "main": "OVA Example" }, "alias": "ova-example" }
+  },
+  {
+    "hash": "5555555555555555555555555555555555555555",
+    "size": 1005,
+    "label": "OAD 1080p",
+    "magnet": "magnet:?xt=urn:btih:5555555555555555555555555555555555555555",
+    "seeders": 5,
+    "leechers": 0,
+    "completed_times": 5,
+    "updated_at": "2026-07-16T10:05:00Z",
+    "release": { "id": 1005, "type": { "value": "OAD" }, "year": 2026, "name": { "main": "OAD Example" }, "alias": "oad-example" }
+  },
+  {
+    "hash": "6666666666666666666666666666666666666666",
+    "size": 1006,
+    "label": "MOVIE 1080p",
+    "magnet": "magnet:?xt=urn:btih:6666666666666666666666666666666666666666",
+    "seeders": 6,
+    "leechers": 0,
+    "completed_times": 6,
+    "updated_at": "2026-07-16T10:06:00Z",
+    "release": { "id": 1006, "type": { "value": "MOVIE" }, "year": 2026, "name": { "main": "Movie Example" }, "alias": "movie-example" }
+  },
+  {
+    "hash": "7777777777777777777777777777777777777777",
+    "size": 1007,
+    "label": "DORAMA 1080p",
+    "magnet": "magnet:?xt=urn:btih:7777777777777777777777777777777777777777",
+    "seeders": 7,
+    "leechers": 0,
+    "completed_times": 7,
+    "updated_at": "2026-07-16T10:07:00Z",
+    "release": { "id": 1007, "type": { "value": "DORAMA" }, "year": 2026, "name": { "main": "Dorama Example" }, "alias": "dorama-example" }
+  },
+  {
+    "hash": "8888888888888888888888888888888888888888",
+    "size": 1008,
+    "label": "SPECIAL 1080p",
+    "magnet": "magnet:?xt=urn:btih:8888888888888888888888888888888888888888",
+    "seeders": 8,
+    "leechers": 0,
+    "completed_times": 8,
+    "updated_at": "2026-07-16T10:08:00Z",
+    "release": { "id": 1008, "type": { "value": "SPECIAL" }, "year": 2026, "name": { "main": "Special Example" }, "alias": "special-example" }
+  }
+]

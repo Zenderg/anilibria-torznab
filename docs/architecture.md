@@ -2,7 +2,7 @@
 
 ## Purpose and ownership
 
-This document is the source of truth for the proposed runtime structure,
+This document is the source of truth for the runtime structure,
 component boundaries, data flow, concurrency model, cache ownership, and failure
 semantics. Product requirements belong in [product-spec.md](product-spec.md),
 wire-level behavior in [torznab-contract.md](torznab-contract.md), upstream facts
@@ -10,9 +10,9 @@ in [integrations/aniliberty.md](integrations/aniliberty.md), and parsing rules i
 [title-normalization.md](title-normalization.md). Release tags and image
 publication belong in [releases.md](releases.md). It is not a work log.
 
-**Status:** proposed architecture for the first implementation
+**Status:** implemented first-release architecture
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 ## Design constraints
 
@@ -298,6 +298,11 @@ require no persistent mount.
 The image healthcheck calls `/healthz` without embedding the API key. Prefer a
 runtime that already contains a suitable healthcheck tool or implement a binary
 health subcommand; do not add a shell solely for the healthcheck without review.
+
+Multi-platform builds run formatting, tests, and vet on BuildKit's native
+`BUILDPLATFORM`, then cross-compile the static binary with the requested
+`TARGETOS` and `TARGETARCH`. Timing-sensitive concurrency tests must not execute
+under QEMU merely because the runtime target is a different architecture.
 
 ## Test seams
 

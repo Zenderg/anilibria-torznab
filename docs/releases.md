@@ -6,13 +6,12 @@ This document is the source of truth for release versions, validation, container
 publication, and final release notes. Product readiness belongs in
 [product-spec.md](product-spec.md), runtime and container design belongs in
 [architecture.md](architecture.md), and verified user deployment instructions
-belong in the public [README](../README.md). This document defines the intended
-release process; it is not a claim that the pre-release repository already has a
-working pipeline or published image.
+belong in the public [README](../README.md). This document defines the active
+release process and its immutable-publication guarantees.
 
-**Status:** release-process baseline, pre-release
+**Status:** active release process
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 ## Release artifact
 
@@ -81,9 +80,9 @@ succeed:
 7. the image requires no writable volume; and
 8. a container started from the built image becomes healthy through `/healthz`.
 
-Race tests should run in normal CI when resource limits permit. The release job
-may depend on that successful CI result rather than running the same expensive
-check twice.
+Race tests run in normal CI and in the release validation job. The release job
+keeps that verification local to the tagged commit instead of assuming that a
+different workflow run tested identical contents.
 
 The manual compatibility evidence listed in the
 [first-release acceptance criteria](product-spec.md#first-release-acceptance-criteria),
@@ -146,6 +145,5 @@ rollback consists of selecting the previous versioned image and recreating the
 Compose service. Configuration compatibility or required operator action must
 be called out in release notes before publication.
 
-Public README deployment, upgrade, and rollback commands are added only after
-they have been exercised against the shipped container, as required by the
-product acceptance criteria.
+The public README deployment, upgrade, and rollback commands use the same
+release Compose file exercised by CI and the manual compatibility gate.

@@ -1,0 +1,19 @@
+[
+  {
+    "hash": "0123456789ABCDEF0123456789ABCDEF01234567",
+    "size": 123456,
+    "label": "1080p",
+    "magnet": "magnet:?xt=urn:btih:0123456789ABCDEF0123456789ABCDEF01234567",
+    "seeders": 10,
+    "leechers": 2,
+    "completed_times": 99,
+    "updated_at": "2026-07-16T10:11:12Z",
+    "release": {
+      "id": 413,
+      "type": { "value": "TV" },
+      "year": 2002,
+      "name": { "main": "Naruto" },
+      "alias": "naruto"
+    }
+  }
+]

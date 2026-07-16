@@ -4,14 +4,16 @@
 
 This document is the source of truth for cleaning Torznab search queries,
 extracting season and episode metadata from AniLiberty torrent labels, matching
-`tvsearch` filters, and rendering deterministic Sonarr-friendly titles. Torznab
-parameter and XML rules belong in [torznab-contract.md](torznab-contract.md),
-upstream JSON fields in [integrations/aniliberty.md](integrations/aniliberty.md),
-and orchestration in [architecture.md](architecture.md).
+`tvsearch` filters, deriving the semantic label title, and rendering
+deterministic titles whose leading series and season/episode form is recognized
+by Sonarr. Torznab parameter and XML rules belong in
+[torznab-contract.md](torznab-contract.md), upstream JSON fields in
+[integrations/aniliberty.md](integrations/aniliberty.md), and orchestration in
+[architecture.md](architecture.md).
 
 **Status:** first-release parsing baseline
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 ## Inputs and outputs
 
@@ -37,20 +39,26 @@ Filtering and title rendering MUST consume the same parsed values.
 For a serial result with episodes:
 
 ```text
-<main name> / <original label> S<season>E<start>[-E<end>] RUS
+<semantic label title> S<season>E<start>[-E<end>] RUS / <main name> / <original label>
 ```
 
 For a serial result without parsed episodes:
 
 ```text
-<main name> / <original label> S<season> RUS
+<semantic label title> S<season> RUS / <main name> / <original label>
 ```
 
 For a movie without parsed episode data:
 
 ```text
-<main name> / <original label> RUS
+<semantic label title> RUS / <main name> / <original label>
 ```
+
+The semantic label title is placed first so Sonarr-compatible Torznab parsers
+encounter `S<season>E<episode>` immediately after the series title they use for
+matching. `release.name.main` and the complete original label follow the
+language marker as stable descriptive context; they do not precede the season
+and episode token.
 
 Season and episode numbers are padded to at least two digits, not truncated:
 `1` becomes `01`, `12` stays `12`, and `123` stays `123`.
@@ -60,8 +68,10 @@ trailing Unicode whitespace. Its quality, codec, distributor tag, punctuation,
 and bracket groups are not rewritten. Exactly one ASCII space separates the
 constructed segments.
 
-`release.name.main` and a non-blank label are required upstream data. The first
-release does not invent a title from `name.english` when `name.main` is missing.
+`release.name.main`, the original label, and the derived semantic label title
+must all be non-blank. A label containing only a distributor suffix and
+technical bracket groups is invalid. The first release does not invent a title
+from `name.english` when `name.main` or the semantic label title is missing.
 
 ## Release classes
 
@@ -82,8 +92,9 @@ Season detection uses the semantic title portion: label text before the first
 technical `[` group. From that region it removes, case-insensitively, only a
 trailing distributor suffix of the exact form
 `- (AniLiberty|AniLibria)(\.(TOP|TV))?`, with surrounding whitespace allowed.
-Episode detection uses bracket groups because quality labels place episode
-ranges there.
+The trimmed result is the semantic label title used both for season detection
+and as the first title segment. Episode detection uses bracket groups because
+quality labels place episode ranges there.
 
 Parsing is Unicode-aware for whitespace but recognizes ASCII keywords and
 digits case-insensitively. Hyphen-minus, en dash, and em dash are accepted as
@@ -174,8 +185,9 @@ Failure to find a season or episode pattern is not an item failure:
 - movies render without synthetic season/episode metadata; and
 - the original label remains present in the title.
 
-Invalid required upstream data, such as an empty label or missing main name, is
-not a parsing failure and is handled by upstream validation.
+Invalid required upstream data, such as an empty label, missing main name, or a
+blank semantic label title, is an item failure. It is handled by upstream
+validation or by the title parser before XML rendering.
 
 ## Query cleanup
 
@@ -245,21 +257,29 @@ Normative query examples:
 
 ## Normative examples
 
-`<RU>` below represents the non-empty `release.name.main`; the complete label is
-shown to make preservation visible.
+`<RU>` below represents the non-empty `release.name.main`; `<label>` represents
+the complete original label shown in the second column.
 
 | Type | Label | Parsed | Rendered suffix/result |
 | --- | --- | --- | --- |
-| `TV` | `Let's Go Kaiki-gumi - AniLiberty.TOP [WEB-DL 1080p][AVC][1-2]` | S1, E1-E2 | `<RU> / <label> S01E01-E02 RUS` |
-| `TV` | `Example Season 2 - AniLiberty.TOP [WEB-DL 1080p][13]` | S2, E13 | `<RU> / <label> S02E13 RUS` |
-| `TV` | `Example 2nd Season - AniLiberty.TOP [WEB-DL 1080p][1-12]` | S2, E1-E12 | `<RU> / <label> S02E01-E12 RUS` |
-| `TV` | `Example II - AniLiberty.TOP [WEB-DL 1080p][03]` | S2, E3 | `<RU> / <label> S02E03 RUS` |
-| `TV` | `Example Part 2 - AniLiberty.TOP [WEB-DL 1080p][04]` | S1, E4 | `<RU> / <label> S01E04 RUS` |
-| `TV` | `86 - Eighty Six - AniLiberty.TOP [WEB-DL 1080p][01]` | S1, E1 | `<RU> / <label> S01E01 RUS` |
-| `TV` | `Example (2024) - AniLiberty.TOP [WEB-DL 1080p][1]` | S1, E1 | `<RU> / <label> S01E01 RUS` |
-| `TV` | `Example - AniLiberty.TOP [WEB-DL 1080p][1-12 + OVA]` | S1, no episodes | `<RU> / <label> S01 RUS` |
-| `MOVIE` | `Example Movie - AniLiberty.TOP [WEB-DL 1080p][AVC]` | no S/E | `<RU> / <label> RUS` |
-| `MOVIE` | `Example Movie - AniLiberty.TOP [WEB-DL 1080p][1]` | S1, E1 | `<RU> / <label> S01E01 RUS` |
+| `TV` | `Let's Go Kaiki-gumi - AniLiberty.TOP [WEB-DL 1080p][AVC][1-2]` | S1, E1-E2 | `Let's Go Kaiki-gumi S01E01-E02 RUS / <RU> / <label>` |
+| `TV` | `Example Season 2 - AniLiberty.TOP [WEB-DL 1080p][13]` | S2, E13 | `Example Season 2 S02E13 RUS / <RU> / <label>` |
+| `TV` | `Example 2nd Season - AniLiberty.TOP [WEB-DL 1080p][1-12]` | S2, E1-E12 | `Example 2nd Season S02E01-E12 RUS / <RU> / <label>` |
+| `TV` | `Example II - AniLiberty.TOP [WEB-DL 1080p][03]` | S2, E3 | `Example II S02E03 RUS / <RU> / <label>` |
+| `TV` | `Example Part 2 - AniLiberty.TOP [WEB-DL 1080p][04]` | S1, E4 | `Example Part 2 S01E04 RUS / <RU> / <label>` |
+| `TV` | `86 - Eighty Six - AniLiberty.TOP [WEB-DL 1080p][01]` | S1, E1 | `86 - Eighty Six S01E01 RUS / <RU> / <label>` |
+| `TV` | `Example (2024) - AniLiberty.TOP [WEB-DL 1080p][1]` | S1, E1 | `Example (2024) S01E01 RUS / <RU> / <label>` |
+| `TV` | `Example - AniLiberty.TOP [WEB-DL 1080p][1-12 + OVA]` | S1, no episodes | `Example S01 RUS / <RU> / <label>` |
+| `MOVIE` | `Example Movie - AniLiberty.TOP [WEB-DL 1080p][AVC]` | no S/E | `Example Movie RUS / <RU> / <label>` |
+| `MOVIE` | `Example Movie - AniLiberty.TOP [WEB-DL 1080p][1]` | S1, E1 | `Example Movie S01E01 RUS / <RU> / <label>` |
+
+The first-release compatibility regression for a real AniLiberty torrent is:
+
+```text
+main:  Наруто Ураганные хроники
+label: Naruto- Shippuuden - AniLiberty.TOP [HDTVRip 720p][AVC][370-500]
+title: Naruto- Shippuuden S01E370-E500 RUS / Наруто Ураганные хроники / Naruto- Shippuuden - AniLiberty.TOP [HDTVRip 720p][AVC][370-500]
+```
 
 These cases MUST be table-driven unit tests. Add regression rows for every
 parsing bug; do not broaden a regular expression without a counterexample test
