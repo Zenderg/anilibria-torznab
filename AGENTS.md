@@ -14,9 +14,11 @@ architecture belong in the linked documents rather than in this file.
 - `docs/title-normalization.md` defines query, season, and episode parsing.
 - `docs/releases.md` defines release versions, validation, and image publication.
 
-The repository is currently in the design phase. The specifications describe
-the implementation baseline, not already-shipped behavior. Do not add unverified
-run or deployment instructions to the public README.
+The repository contains the shipped `v1.0.0` implementation. Treat release tags
+and `docs/releases.md` as the source of truth for published artifacts, and
+`docs/compatibility.md` as the source of truth for verified client behavior.
+Keep public run and deployment instructions verified against shipped artifacts;
+do not add speculative instructions to the public README.
 
 ## Working rules
 
