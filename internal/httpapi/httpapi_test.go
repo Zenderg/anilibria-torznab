@@ -390,7 +390,43 @@ func TestProtocolErrorMapping(t *testing.T) {
 	}
 }
 
-func TestUnsupportedQueryNumericContinuationsReturnHTTPError(t *testing.T) {
+func TestUnsupportedFunctionClassification(t *testing.T) {
+	t.Parallel()
+
+	knownUnavailable := []string{
+		"book", "cartadd", "cartdel", "commentadd", "comments", "details",
+		"get", "getnfo", "movie", "music", "register", "user",
+	}
+	for _, operation := range knownUnavailable {
+		operation := operation
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			executor := newFakeExecutor()
+			api := newTestAPI(t, executor, nil, time.Second)
+			recorder := perform(api, http.MethodGet, "/api?apikey="+testAPIKey+"&t="+operation)
+			assertProtocolError(t, recorder, torznab.ErrorFunctionUnavailable, "Function not available")
+			if len(executor.Requests()) != 0 {
+				t.Fatal("executor called for an unavailable function")
+			}
+		})
+	}
+
+	for _, operation := range []string{"genres", "nope"} {
+		operation := operation
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			executor := newFakeExecutor()
+			api := newTestAPI(t, executor, nil, time.Second)
+			recorder := perform(api, http.MethodGet, "/api?apikey="+testAPIKey+"&t="+operation)
+			assertProtocolError(t, recorder, torznab.ErrorNoSuchFunction, "No such function")
+			if len(executor.Requests()) != 0 {
+				t.Fatal("executor called for an unknown function")
+			}
+		})
+	}
+}
+
+func TestInvalidNormalizedQueriesReturnHTTPError(t *testing.T) {
 	t.Parallel()
 	queries := []string{
 		"Title+S02E03.5",
@@ -398,6 +434,11 @@ func TestUnsupportedQueryNumericContinuationsReturnHTTPError(t *testing.T) {
 		"Title+Episode+1-2",
 		"Title+Season+2.5",
 		"Title+S02.5E03",
+		"Title+S02.5th",
+		"Title+Episode+1-2nd",
+		"Title+S02%2F3abc",
+		"Title+S02E03.5th",
+		strings.Repeat("x", 4097),
 	}
 	for _, query := range queries {
 		executor := newFakeExecutor()

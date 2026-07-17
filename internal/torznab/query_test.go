@@ -2,6 +2,8 @@ package torznab
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +32,15 @@ func TestNormalizeQueryNormativeExamples(t *testing.T) {
 		{"year and internal separator retained", "Title S02E03 - 2026", nil, nil, "Title - 2026", intPointer(2), intPointer(3), true},
 		{"empty after cleanup", "S02E03", nil, nil, "", intPointer(2), intPointer(3), true},
 		{"embedded text retained", "MyS02 ShowE03", nil, nil, "MyS02 ShowE03", nil, nil, false},
+		{"trailing hyphen", "Title-S02", nil, nil, "Title", intPointer(2), nil, true},
+		{"leading hyphen", "S02-Title", nil, nil, "Title", intPointer(2), nil, true},
+		{"trailing dot", "Title.S02", nil, nil, "Title", intPointer(2), nil, true},
+		{"leading dot", "S02.Title", nil, nil, "Title", intPointer(2), nil, true},
+		{"trailing slash", "Title/S02", nil, nil, "Title", intPointer(2), nil, true},
+		{"leading slash", "S02/Title", nil, nil, "Title", intPointer(2), nil, true},
+		{"parenthesized token before trailing separator", "Title (S02)-", nil, nil, "Title", intPointer(2), nil, true},
+		{"parenthesized token after leading separator", "-(S02) Title", nil, nil, "Title", intPointer(2), nil, true},
+		{"nested technical pairs", "Title ([S02])", nil, nil, "Title", intPointer(2), nil, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -67,6 +78,10 @@ func TestNormalizeQueryRejectsMalformedAndConflictingValues(t *testing.T) {
 		{"Title Season 2.5", nil, nil, ParameterQuery},
 		{"Title S02.5E03", nil, nil, ParameterQuery},
 		{"Title 2.5x03", nil, nil, ParameterQuery},
+		{"Title S02.5th", nil, nil, ParameterQuery},
+		{"Title Episode 1-2nd", nil, nil, ParameterQuery},
+		{"Title S02/3abc", nil, nil, ParameterQuery},
+		{"Title S02E03.5th", nil, nil, ParameterQuery},
 	}
 	for _, test := range tests {
 		_, err := NormalizeQuery(test.query, test.season, test.episode)
@@ -74,6 +89,38 @@ func TestNormalizeQueryRejectsMalformedAndConflictingValues(t *testing.T) {
 		if !errors.As(err, &parameterError) || parameterError.Parameter != test.param {
 			t.Errorf("NormalizeQuery(%q) error = %v, want ParameterError(%s)", test.query, err, test.param)
 		}
+	}
+}
+
+func TestNormalizeQueryBoundsWorkBeforeTokenScanning(t *testing.T) {
+	t.Parallel()
+
+	query := strings.Repeat("S01 ", 1000) + "Title"
+	result, err := NormalizeQuery(query, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CleanQuery != "Title" || result.EffectiveSeason == nil || *result.EffectiveSeason != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+
+	_, err = NormalizeQuery(strings.Repeat("x", maxQueryBytes+1), nil, nil)
+	var parameterError *ParameterError
+	if !errors.As(err, &parameterError) || parameterError.Parameter != ParameterQuery {
+		t.Fatalf("oversized query error = %v", err)
+	}
+}
+
+func BenchmarkNormalizeQueryRepeatedTokens(b *testing.B) {
+	for _, count := range []int{100, 500, 1000} {
+		query := strings.Repeat("S01 ", count) + "Title"
+		b.Run(fmt.Sprintf("tokens_%d", count), func(b *testing.B) {
+			for b.Loop() {
+				if _, err := NormalizeQuery(query, nil, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

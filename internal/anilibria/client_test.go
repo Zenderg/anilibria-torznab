@@ -165,6 +165,35 @@ func TestInvalidTorrentIsOmittedAndLoggedSafely(t *testing.T) {
 	}
 }
 
+func TestInvalidTorrentWarningsAreBounded(t *testing.T) {
+	t.Parallel()
+
+	const invalidItems = 10_000
+	var logs bytes.Buffer
+	client := &Client{logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	torrents, err := client.validTorrents(context.Background(), "latest", make([]rawTorrent, invalidItems))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(torrents) != 0 {
+		t.Fatalf("torrent count = %d", len(torrents))
+	}
+
+	logOutput := logs.String()
+	if warnings := strings.Count(logOutput, "level=WARN"); warnings != invalidTorrentLogSampleLimit+1 {
+		t.Fatalf("warning count = %d, want %d", warnings, invalidTorrentLogSampleLimit+1)
+	}
+	for _, required := range []string{
+		"invalid_count=10000",
+		"sampled_count=5",
+		"omitted_count=9995",
+	} {
+		if !strings.Contains(logOutput, required) {
+			t.Errorf("aggregate log missing %q: %s", required, logOutput)
+		}
+	}
+}
+
 func TestStatusClassificationAndRetryEligibility(t *testing.T) {
 	t.Parallel()
 

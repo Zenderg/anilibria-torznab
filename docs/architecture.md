@@ -203,7 +203,11 @@ context and a reference count of active waiters rather than inheriting the first
 caller's context directly. A cancelled waiter detaches immediately. The load is
 cancelled when its last waiter detaches; it continues when at least one waiter
 still needs it. This prevents one caller from cancelling another while also
-preventing abandoned cache fills after all callers leave.
+preventing abandoned cache fills after all callers leave. The load also exposes
+the effective retry budget: it is unbounded when any active waiter is unbounded,
+otherwise it is the latest active waiter deadline, capped by an earlier base
+deadline. AniLiberty retry admission uses that budget without making one
+caller's cancellation terminate a sibling's shared load.
 
 ## Result processing order
 

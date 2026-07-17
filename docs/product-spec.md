@@ -11,7 +11,7 @@ parsing rules belong in [title-normalization.md](title-normalization.md). Releas
 versioning and image publication belong in [releases.md](releases.md). Temporary
 implementation plans and work logs do not belong here.
 
-**Status:** implemented for `v1.0.0`
+**Status:** implemented for `v1.0.1`
 
 **Last updated:** 2026-07-17
 
@@ -104,7 +104,9 @@ an XML error rather than an empty successful feed. A genuinely empty successful
 upstream response MUST produce an empty successful feed.
 
 `tvsearch` requires a non-empty normalized `q`. A blank `search` query selects
-the latest-torrents flow; a blank `tvsearch` query is an incorrect request.
+the latest-torrents flow; a blank `tvsearch` query is an incorrect request. A
+decoded `q` longer than 4096 UTF-8 bytes is rejected before technical-token
+normalization.
 
 ## Latest/RSS behavior
 
@@ -182,7 +184,10 @@ Validation is explicit; zero never means "disable":
 
 - `API_KEY` is compared exactly as supplied and must contain 1..1024 bytes of
   valid UTF-8. Invalid keys fail startup without being included in the error.
-- `LISTEN_ADDR` must be non-empty and must successfully bind during startup.
+- `LISTEN_ADDR` must be a TCP host-and-port address with a numeric port in
+  `1..65535` and must successfully bind during startup. Port zero is invalid
+  because the supported Compose deployment cannot discover or healthcheck an
+  ephemeral container port.
 - Both base URLs must be absolute `https` URLs with a host and no user info,
   query, or fragment. Their path prefix is allowed and normalized to one trailing
   slash without decoding valid reserved escapes such as `%2F`.

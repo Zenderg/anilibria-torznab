@@ -23,7 +23,8 @@ const (
 	backoffBase     = 250 * time.Millisecond
 	backoffMaximum  = 5 * time.Second
 
-	torrentInclude = "hash,size,label,magnet,seeders,leechers,completed_times,updated_at,release.id,release.type.value,release.year,release.name.main,release.alias"
+	torrentInclude               = "hash,size,label,magnet,seeders,leechers,completed_times,updated_at,release.id,release.type.value,release.year,release.name.main,release.alias"
+	invalidTorrentLogSampleLimit = 5
 )
 
 // API is the upstream boundary consumed by the service layer.
@@ -227,20 +228,32 @@ func (client *Client) Latest(ctx context.Context) ([]Torrent, error) {
 
 func (client *Client) validTorrents(ctx context.Context, operation string, raw []rawTorrent) ([]Torrent, error) {
 	torrents := make([]Torrent, 0, len(raw))
+	invalidCount := 0
 	for index, item := range raw {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		torrent, field, err := validateTorrent(item)
 		if err != nil {
-			attributes := []any{"operation", operation, "item_index", index, "field", field}
-			if releaseID, parseErr := positiveInteger(item.Release.ID); parseErr == nil {
-				attributes = append(attributes, "release_id", releaseID)
+			invalidCount++
+			if invalidCount <= invalidTorrentLogSampleLimit {
+				attributes := []any{"operation", operation, "item_index", index, "field", field}
+				if releaseID, parseErr := positiveInteger(item.Release.ID); parseErr == nil {
+					attributes = append(attributes, "release_id", releaseID)
+				}
+				client.logger.WarnContext(ctx, "dropping invalid AniLiberty torrent", attributes...)
 			}
-			client.logger.Warn("dropping invalid AniLiberty torrent", attributes...)
 			continue
 		}
 		torrents = append(torrents, torrent)
+	}
+	if invalidCount > invalidTorrentLogSampleLimit {
+		client.logger.WarnContext(ctx, "additional invalid AniLiberty torrents dropped",
+			"operation", operation,
+			"invalid_count", invalidCount,
+			"sampled_count", invalidTorrentLogSampleLimit,
+			"omitted_count", invalidCount-invalidTorrentLogSampleLimit,
+		)
 	}
 	return torrents, nil
 }
@@ -432,7 +445,13 @@ func negativeDecimal(value string) bool {
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < delay {
+	deadline, bounded := ctx.Deadline()
+	if provider, ok := ctx.(interface {
+		EffectiveDeadline() (time.Time, bool)
+	}); ok {
+		deadline, bounded = provider.EffectiveDeadline()
+	}
+	if bounded && time.Until(deadline) < delay {
 		return context.DeadlineExceeded
 	}
 	return waitContext(ctx, delay)

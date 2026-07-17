@@ -221,7 +221,10 @@ are integer-valued. Decode them without accepting fractional values.
 `size`, seeders, leechers, and completed counts must be non-negative. Hash must
 be exactly 40 hexadecimal characters and is normalized to lowercase. Magnet must
 use the `magnet` scheme. Invalid required data causes that torrent to be omitted
-and safely logged; fields are not guessed or reconstructed.
+and safely logged; fields are not guessed or reconstructed. One upstream
+collection logs at most five item-level validation samples plus one aggregate
+warning containing the total and omitted counts. Raw item data and validation
+values are never logged.
 
 All upstream strings selected for XML output must contain only characters valid
 in XML 1.0. An invalid main name, label, alias/details URL, or magnet invalidates

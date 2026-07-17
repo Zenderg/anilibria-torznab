@@ -91,6 +91,9 @@ Parameters:
 | `offset` | no | unsigned 64-bit zero-based number to skip, default 0 |
 | `extended` | no | `0` or `1`; accepted for client compatibility |
 
+The decoded `q` value is limited to 4096 UTF-8 bytes. A larger value returns
+error `201` for `q` before technical-token scanning.
+
 ### `tvsearch`
 
 ```http
@@ -116,6 +119,8 @@ notation. Absolute episode notation, fractional values, and multi-episode ranges
 such as `ep=2/12` are also invalid explicit values. In `q`, a fractional or range
 continuation of an otherwise recognized technical token, such as `S02E03.5` or
 `Episode 1-2`, produces error `201` for `q` rather than being partially removed.
+The same rule applies when the continuation has a letter suffix, for example
+`S02E03.5th` or `Episode 1-2nd`.
 
 ## Category filtering
 
@@ -270,6 +275,11 @@ The first release uses these safe descriptions and templates:
 | `202` | `No such function` | unknown function name |
 | `203` | `Function not available` | known Torznab/Newznab function not implemented by this service |
 | `900` | `Upstream request failed` | upstream search/latest failed, or every fan-out branch failed |
+
+Known but unavailable functions are `book`, `cartadd`, `cartdel`, `commentadd`,
+`comments`, `details`, `get`, `getnfo`, `movie`, `music`, `register`, and
+`user`. `genres` is a capabilities element rather than a defined `t` function,
+so `t=genres` returns `202`.
 
 Descriptions are fixed safe strings. They MUST NOT contain the supplied key,
 query, upstream URL, raw upstream body, or internal error text.

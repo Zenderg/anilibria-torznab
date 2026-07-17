@@ -338,8 +338,18 @@ var knownParameters = map[string]torznab.Parameter{
 var singletonParameters = []string{"t", "q", "cat", "limit", "offset", "extended", "season", "ep"}
 
 var unavailableFunctions = map[string]bool{
-	"book": true, "details": true, "get": true, "genres": true,
-	"movie": true, "music": true, "register": true,
+	"book":       true,
+	"cartadd":    true,
+	"cartdel":    true,
+	"commentadd": true,
+	"comments":   true,
+	"details":    true,
+	"get":        true,
+	"getnfo":     true,
+	"movie":      true,
+	"music":      true,
+	"register":   true,
+	"user":       true,
 }
 
 func canonicalValues(values url.Values) map[string][]string {

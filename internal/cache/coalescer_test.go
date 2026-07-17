@@ -220,6 +220,83 @@ func TestCoalescerDoesNotMergeDistinctKeys(t *testing.T) {
 	}
 }
 
+func TestCoalescerLoadUsesLatestActiveWaiterDeadline(t *testing.T) {
+	coalescer := NewCoalescer[string, int](context.Background())
+	started := make(chan struct{})
+	inspect := make(chan chan time.Time)
+	release := make(chan struct{})
+	load := func(ctx context.Context) (int, error) {
+		provider, ok := ctx.(interface {
+			EffectiveDeadline() (time.Time, bool)
+		})
+		if !ok {
+			t.Error("load context does not report an effective deadline")
+			return 0, errors.New("missing effective deadline")
+		}
+		close(started)
+		for {
+			select {
+			case result := <-inspect:
+				deadline, bounded := provider.EffectiveDeadline()
+				if !bounded {
+					t.Error("effective deadline is unbounded")
+				}
+				result <- deadline
+			case <-release:
+				return 11, nil
+			}
+		}
+	}
+
+	firstDeadline := time.Now().Add(5 * time.Second)
+	firstContext, cancelFirst := context.WithDeadline(context.Background(), firstDeadline)
+	defer cancelFirst()
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := coalescer.Do(firstContext, "key", load)
+		firstResult <- err
+	}()
+	<-started
+
+	secondDeadline := time.Now().Add(10 * time.Second)
+	secondContext, cancelSecond := context.WithDeadline(context.Background(), secondDeadline)
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := coalescer.Do(secondContext, "key", load)
+		secondResult <- err
+	}()
+	waitFor(t, func() bool {
+		coalescer.mu.Lock()
+		defer coalescer.mu.Unlock()
+		return coalescer.calls["key"].waiters == 2
+	})
+
+	result := make(chan time.Time)
+	inspect <- result
+	if got := <-result; !got.Equal(secondDeadline) {
+		t.Fatalf("effective deadline = %v, want %v", got, secondDeadline)
+	}
+
+	cancelSecond()
+	if err := <-secondResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second error = %v", err)
+	}
+	waitFor(t, func() bool {
+		coalescer.mu.Lock()
+		defer coalescer.mu.Unlock()
+		return coalescer.calls["key"].waiters == 1
+	})
+	inspect <- result
+	if got := <-result; !got.Equal(firstDeadline) {
+		t.Fatalf("effective deadline after detach = %v, want %v", got, firstDeadline)
+	}
+
+	close(release)
+	if err := <-firstResult; err != nil {
+		t.Fatalf("first error = %v", err)
+	}
+}
+
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

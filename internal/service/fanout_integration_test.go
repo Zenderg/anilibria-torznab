@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,6 +94,39 @@ func TestRealClientServiceFanoutProtection(t *testing.T) {
 			t.Fatal("deadline returned a successful partial response")
 		}
 	})
+}
+
+func TestServicePreservesRetryBudgetThroughCoalescing(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		response.Header().Set("Retry-After", "10")
+		response.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer upstream.Close()
+	searchService := newIntegratedService(t, upstream.URL, time.Microsecond, 1)
+
+	const deadline = 500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	started := time.Now()
+	_, err := searchService.Execute(ctx, integratedRequest(t))
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("Execute() unexpectedly succeeded")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("request context expired before the budget error returned: %v", ctx.Err())
+	}
+	if elapsed >= deadline/2 {
+		t.Fatalf("Execute() waited despite insufficient Retry-After budget: %v", elapsed)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
 }
 
 type fanoutProbe struct {

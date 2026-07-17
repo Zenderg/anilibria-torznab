@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -74,8 +75,8 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	var err error
 
 	cfg.ListenAddr = optionalString(getenv, "LISTEN_ADDR", defaultListenAddr)
-	if strings.TrimSpace(cfg.ListenAddr) == "" {
-		return Config{}, invalid("LISTEN_ADDR", "must be non-empty")
+	if err := validateListenAddr(cfg.ListenAddr); err != nil {
+		return Config{}, invalid("LISTEN_ADDR", err.Error())
 	}
 
 	cfg.APIKey, _ = getenv("API_KEY")
@@ -137,6 +138,21 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func validateListenAddr(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return errors.New("must be non-empty")
+	}
+	_, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return errors.New("must be a TCP host:port address")
+	}
+	value, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || value == 0 {
+		return errors.New("must use a numeric TCP port between 1 and 65535")
+	}
+	return nil
 }
 
 func optionalString(getenv func(string) (string, bool), name, fallback string) string {

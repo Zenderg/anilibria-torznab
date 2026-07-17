@@ -194,8 +194,10 @@ validation or by the title parser before XML rendering.
 Query normalization returns a single value containing `CleanQuery`, optional
 `EffectiveSeason`, optional `EffectiveEpisode`, and `HadTechnicalTokens`.
 Explicit `season`/`ep` parameters are normalized first; then Prowlarr or Sonarr
-tokens embedded in `q` fill any missing effective value. Before AniLiberty
-release search, remove only complete, unambiguous tokens:
+tokens embedded in `q` fill any missing effective value. The decoded query is
+limited to 4096 UTF-8 bytes before token scanning; a longer value is an
+incorrect `q` parameter. Before AniLiberty release search, remove only complete,
+unambiguous tokens:
 
 ```text
 S02E03
@@ -215,6 +217,10 @@ present, the token must agree with it.
 
 Conflicting values are an incorrect parameter error; they are not silently
 rewritten. For example, `q=Title S02E03&season=1&ep=3` returns error `201`.
+Numeric continuations of a recognized token are also incorrect, including
+fractions, ranges, and suffixed variants such as `S02E03.5th`,
+`Episode 1-2nd`, and `S02/3abc`; the recognized prefix is never partially
+removed.
 
 Cleanup MUST NOT remove:
 
@@ -228,6 +234,10 @@ Cleanup MUST NOT remove:
 After token removal, collapse Unicode whitespace to single ASCII spaces and
 trim separators that became isolated at either edge. Do not transliterate,
 lowercase, or remove punctuation from the title sent upstream.
+
+Token, empty-technical-pair, and edge-separator cleanup must scan the bounded
+query in linear or near-linear time. It must not rescan an increasing
+prefix/suffix for every recognized token.
 
 For `search`, an empty cleaned query selects the latest flow only when the
 original `q` was missing or blank. A non-blank query made empty solely by token

@@ -17,6 +17,8 @@ var (
 	queryE     = regexp.MustCompile(`(?i)^(?:E|Ep` + regexpWhitespace + `+|Episode` + regexpWhitespace + `+)([0-9]+)$`)
 )
 
+const maxQueryBytes = 4096
+
 // Parameter identifies a canonical Torznab parameter.
 type Parameter string
 
@@ -52,6 +54,10 @@ type NormalizedQuery struct {
 // NormalizeQuery validates optional explicit filters and removes complete,
 // unambiguous Sonarr/Prowlarr season and episode tokens from query.
 func NormalizeQuery(query string, explicitSeason, explicitEpisode *string) (NormalizedQuery, error) {
+	if len(query) > maxQueryBytes {
+		return NormalizedQuery{}, &ParameterError{Parameter: ParameterQuery}
+	}
+
 	season, err := parseExplicitFilter(explicitSeason, "S", maxSeason, ParameterSeason)
 	if err != nil {
 		return NormalizedQuery{}, err
@@ -64,7 +70,6 @@ func NormalizeQuery(query string, explicitSeason, explicitEpisode *string) (Norm
 	indexes := queryToken.FindAllStringIndex(query, -1)
 	remove := make([]bool, len(query))
 	technical := make([]bool, len(query))
-	tokenRanges := make([][2]int, 0, len(indexes))
 	hadTokens := false
 	for _, index := range indexes {
 		if !completeToken(query, index[0], index[1]) {
@@ -94,13 +99,10 @@ func NormalizeQuery(query string, explicitSeason, explicitEpisode *string) (Norm
 			remove[i] = true
 			technical[i] = true
 		}
-		tokenRanges = append(tokenRanges, [2]int{index[0], index[1]})
 		hadTokens = true
 	}
-	for _, tokenRange := range tokenRanges {
-		markStandaloneTokenSeparators(query, remove, tokenRange[0], tokenRange[1])
-	}
 	markEmptyTechnicalPairs(query, remove, technical)
+	markTechnicalEdgeSeparators(query, remove, technical)
 
 	var cleaned strings.Builder
 	for index := 0; index < len(query); {
@@ -197,11 +199,7 @@ func numericContinuationAfter(value string) bool {
 	if index == len(value) {
 		return true
 	}
-	next, _ := firstRune(value[index:])
-	if next == 'e' || next == 'E' || next == 'x' || next == 'X' {
-		return true
-	}
-	return !unicode.IsLetter(next) && !unicode.IsDigit(next)
+	return true
 }
 
 func numericContinuationBefore(value string) bool {
@@ -227,109 +225,122 @@ func numericContinuationBefore(value string) bool {
 	if index == 0 {
 		return true
 	}
-	previous, _ := lastRune(value[:index])
-	if previous == 's' || previous == 'S' || previous == 'e' || previous == 'E' {
-		return true
-	}
-	return !unicode.IsLetter(previous) && !unicode.IsDigit(previous)
-}
-
-func markStandaloneTokenSeparators(value string, remove []bool, start, end int) {
-	if emptyAfterRemoval(value, remove, 0, start) {
-		afterSpaces := skipSpaceForward(value, end)
-		afterSeparators := afterSpaces
-		for afterSeparators < len(value) {
-			r, width := firstRune(value[afterSeparators:])
-			if !isTokenSeparator(r) {
-				break
-			}
-			afterSeparators += width
-		}
-		if afterSeparators > afterSpaces {
-			if afterSeparators == len(value) {
-				markBytes(remove, end, afterSeparators)
-			} else if next, _ := firstRune(value[afterSeparators:]); unicode.IsSpace(next) {
-				markBytes(remove, end, skipSpaceForward(value, afterSeparators))
-			}
-		}
-	}
-
-	if !emptyAfterRemoval(value, remove, end, len(value)) {
-		return
-	}
-	beforeSpaces := skipSpaceBackward(value, start)
-	beforeSeparators := beforeSpaces
-	for beforeSeparators > 0 {
-		r, width := lastRune(value[:beforeSeparators])
-		if !isTokenSeparator(r) {
-			break
-		}
-		beforeSeparators -= width
-	}
-	if beforeSeparators == beforeSpaces {
-		return
-	}
-	if beforeSeparators == 0 {
-		markBytes(remove, 0, start)
-	} else if previous, _ := lastRune(value[:beforeSeparators]); unicode.IsSpace(previous) {
-		markBytes(remove, skipSpaceBackward(value, beforeSeparators), start)
-	}
-}
-
-func markEmptyTechnicalPairs(value string, remove, technical []bool) {
-	pairs := [][2]byte{{'(', ')'}, {'[', ']'}, {'{', '}'}}
-	for {
-		changed := false
-		for _, pair := range pairs {
-			var openings []int
-			for index := 0; index < len(value); index++ {
-				switch value[index] {
-				case pair[0]:
-					openings = append(openings, index)
-				case pair[1]:
-					if len(openings) == 0 {
-						continue
-					}
-					open := openings[len(openings)-1]
-					openings = openings[:len(openings)-1]
-					if !containsMarked(technical, open+1, index) || !emptyAfterRemoval(value, remove, open+1, index) {
-						continue
-					}
-					if markBytes(remove, open, index+1) {
-						changed = true
-					}
-					markStandaloneTokenSeparators(value, remove, open, index+1)
-				}
-			}
-		}
-		if !changed {
-			return
-		}
-	}
-}
-
-func emptyAfterRemoval(value string, remove []bool, start, end int) bool {
-	for index := start; index < end; {
-		if remove[index] {
-			index++
-			continue
-		}
-		r, width := utf8.DecodeRuneInString(value[index:end])
-		if !unicode.IsSpace(r) {
-			return false
-		}
-		index += width
-	}
 	return true
 }
 
-func containsMarked(marked []bool, start, end int) bool {
-	for index := start; index < end; index++ {
-		if marked[index] {
-			return true
+func markEmptyTechnicalPairs(value string, remove, technical []bool) {
+	type frame struct {
+		open         int
+		close        rune
+		hasTechnical bool
+		hasVisible   bool
+	}
+
+	var stack []frame
+	for index := 0; index < len(value); {
+		r, width := firstRune(value[index:])
+		if remove[index] {
+			if len(stack) > 0 {
+				stack[len(stack)-1].hasTechnical = true
+			}
+			index += width
+			continue
+		}
+		if unicode.IsSpace(r) {
+			index += width
+			continue
+		}
+		if close, ok := technicalPairClose(r); ok {
+			stack = append(stack, frame{open: index, close: close})
+			index += width
+			continue
+		}
+		if len(stack) > 0 && r == stack[len(stack)-1].close {
+			current := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if current.hasTechnical && !current.hasVisible {
+				markBytes(remove, current.open, index+width)
+				markBytes(technical, current.open, index+width)
+				if len(stack) > 0 {
+					stack[len(stack)-1].hasTechnical = true
+				}
+			} else if len(stack) > 0 {
+				stack[len(stack)-1].hasVisible = true
+				stack[len(stack)-1].hasTechnical = stack[len(stack)-1].hasTechnical || current.hasTechnical
+			}
+			index += width
+			continue
+		}
+		if len(stack) > 0 {
+			stack[len(stack)-1].hasVisible = true
+		}
+		index += width
+	}
+}
+
+func technicalPairClose(r rune) (rune, bool) {
+	switch r {
+	case '(':
+		return ')', true
+	case '[':
+		return ']', true
+	case '{':
+		return '}', true
+	default:
+		return 0, false
+	}
+}
+
+func markTechnicalEdgeSeparators(value string, remove, technical []bool) {
+	var leadingSeparators [][2]int
+	sawTechnical := false
+	for index := 0; index < len(value); {
+		if remove[index] {
+			sawTechnical = sawTechnical || technical[index]
+			index++
+			continue
+		}
+		r, width := firstRune(value[index:])
+		switch {
+		case unicode.IsSpace(r):
+		case isTokenSeparator(r):
+			leadingSeparators = append(leadingSeparators, [2]int{index, index + width})
+		default:
+			index = len(value)
+			continue
+		}
+		index += width
+	}
+	if sawTechnical {
+		for _, separator := range leadingSeparators {
+			markBytes(remove, separator[0], separator[1])
 		}
 	}
-	return false
+
+	var trailingSeparators [][2]int
+	sawTechnical = false
+	for index := len(value); index > 0; {
+		if remove[index-1] {
+			sawTechnical = sawTechnical || technical[index-1]
+			index--
+			continue
+		}
+		r, width := lastRune(value[:index])
+		switch {
+		case unicode.IsSpace(r):
+		case isTokenSeparator(r):
+			trailingSeparators = append(trailingSeparators, [2]int{index - width, index})
+		default:
+			index = 0
+			continue
+		}
+		index -= width
+	}
+	if sawTechnical {
+		for _, separator := range trailingSeparators {
+			markBytes(remove, separator[0], separator[1])
+		}
+	}
 }
 
 func markBytes(marked []bool, start, end int) bool {
