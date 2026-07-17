@@ -49,19 +49,12 @@ jobs:
           version=${tag#v}
           published_rerun=false
 
-          latest_release=$(
+          latest_tag=$(
             gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[] | select(.draft == false and .prerelease == false) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | "\(.published_at) \(.tag_name)"' |
-              sort |
-              tail -n 1
+              --jq '.[] | select(.draft == false and .prerelease == false and .published_at != null) | .tag_name' |
+              bash scripts/release/select-latest-stable.sh
           )
-          latest_tag=${latest_release#* }
           if [[ -n "$latest_tag" ]]; then
-            if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "latest published release is not a stable version: $latest_tag" >&2
-              exit 1
-            fi
-
             git fetch --force origin "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
             latest_commit=$(git rev-parse "${latest_tag}^{commit}")
             latest_version=${latest_tag#v}
@@ -97,6 +90,7 @@ jobs:
           test -z "$(gofmt -l .)"
           bash scripts/release/check-deployment-version.sh
           bash scripts/release/registry_test.sh
+          bash scripts/release/select-latest-stable_test.sh
           go test ./...
           go test -race ./...
           go vet ./...
@@ -303,7 +297,7 @@ jobs:
             echo "arm64=$arm64"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create and tag the multi-platform image index once
+      - name: Create the immutable multi-platform image index once
         if: steps.existing.outputs.found != 'true'
         env:
           VERSION: ${{ needs.validate.outputs.version }}
@@ -321,15 +315,13 @@ jobs:
           docker buildx imagetools create \
             --tag "${IMAGE_NAME}:${GITHUB_REF_NAME}" \
             --tag "${IMAGE_NAME}:${VERSION}" \
-            --tag "${IMAGE_NAME}:latest" \
             "${IMAGE_NAME}@${AMD64_DIGEST}" \
             "${IMAGE_NAME}@${ARM64_DIGEST}"
 
       - id: verify
-        name: Verify tags, digest, and platforms
+        name: Verify immutable tags, digest, and platforms
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-          EXISTING: ${{ steps.existing.outputs.found }}
         shell: bash
         run: |
           digest_of() {
@@ -341,13 +333,6 @@ jobs:
           if [[ -z "$version_digest" || "$version_digest" != "$bare_digest" ]]; then
             echo "published version tags do not resolve to one image index" >&2
             exit 1
-          fi
-          if [[ "$EXISTING" != "true" ]]; then
-            latest_digest=$(digest_of "${IMAGE_NAME}:latest")
-            if [[ "$version_digest" != "$latest_digest" ]]; then
-              echo "latest does not resolve to the new stable image index" >&2
-              exit 1
-            fi
           fi
 
           raw=$(docker buildx imagetools inspect "${IMAGE_NAME}@${version_digest}" --raw)
@@ -397,6 +382,8 @@ jobs:
             echo "Image-index digest: \`${IMAGE_DIGEST}\`"
             echo
             echo "Platforms: \`linux/amd64\`, \`linux/arm64\`."
+            echo
+            echo "The mutable \`latest\` tag will be promoted to this digest only after this draft is published."
             echo
             echo "## Docker Compose"
             echo

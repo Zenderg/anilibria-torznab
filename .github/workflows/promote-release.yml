@@ -1,0 +1,124 @@
+name: Promote published stable release
+
+on:
+  release:
+    types:
+      - published
+
+permissions: {}
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.event.release.draft == false && github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/zenderg/anilibria-torznab
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: main
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate the published release and immutable image
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "published release is not a stable version: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
+            echo "release tag must be annotated: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          release_commit=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          if ! git merge-base --is-ancestor "$release_commit" origin/main; then
+            echo "published release commit is not contained in main" >&2
+            exit 1
+          fi
+
+          highest_tag=$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false and .published_at != null) | .tag_name' |
+              bash scripts/release/select-latest-stable.sh
+          )
+          if [[ "$highest_tag" != "$RELEASE_TAG" ]]; then
+            echo "published release $RELEASE_TAG is not the highest stable version $highest_tag" >&2
+            exit 1
+          fi
+
+          designated_latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          if [[ "$designated_latest" != "$RELEASE_TAG" ]]; then
+            echo "GitHub designates $designated_latest as latest, not $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          version=${RELEASE_TAG#v}
+          digest_of() {
+            docker buildx imagetools inspect "$1" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}'
+          }
+
+          version_digest=$(digest_of "${IMAGE_NAME}:${RELEASE_TAG}")
+          bare_digest=$(digest_of "${IMAGE_NAME}:${version}")
+          if [[ -z "$version_digest" || "$version_digest" != "$bare_digest" ]]; then
+            echo "published immutable version tags are missing or disagree" >&2
+            exit 1
+          fi
+
+          raw=$(docker buildx imagetools inspect "${IMAGE_NAME}@${version_digest}" --raw)
+          platforms=$(jq -r '[.manifests[] | select(.platform.os == "linux") | (.platform.os + "/" + .platform.architecture)] | unique | sort | join(",")' <<< "$raw")
+          if [[ "$platforms" != "linux/amd64,linux/arm64" ]]; then
+            echo "unexpected image platforms: $platforms" >&2
+            exit 1
+          fi
+
+          verify_platform_identity() {
+            local platform=$1
+            local metadata
+            local image_version
+            local image_revision
+
+            metadata=$(docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}" --format "{{json (index .Image \"$platform\")}}")
+            image_version=$(jq -r '.config.Labels["org.opencontainers.image.version"] // empty' <<< "$metadata")
+            image_revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<< "$metadata")
+            if [[ "$image_version" != "$RELEASE_TAG" || "$image_revision" != "$release_commit" ]]; then
+              echo "$platform image identity does not match $RELEASE_TAG at $release_commit" >&2
+              exit 1
+            fi
+          }
+          verify_platform_identity linux/amd64
+          verify_platform_identity linux/arm64
+
+          echo "IMAGE_DIGEST=$version_digest" >> "$GITHUB_ENV"
+
+      - name: Promote latest to the published image digest
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE_NAME}:latest" \
+            "${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+          latest_digest=$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
+          if [[ "$latest_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "latest does not resolve to the published stable image index" >&2
+            exit 1
+          fi

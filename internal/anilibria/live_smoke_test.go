@@ -20,6 +20,38 @@ func TestLiveAniLibertySmoke(t *testing.T) {
 		t.Skip("set ANILIBRIA_LIVE_SMOKE=1 to run read-only AniLiberty smoke requests")
 	}
 
+	observations := observeConfiguredLiveEndpoints(t, observeLiveEndpoint)
+	primary, hasPrimary := observations["default"]
+	mirror, hasMirror := observations["mirror"]
+	if !hasPrimary && !hasMirror {
+		return
+	}
+	if !hasPrimary || !hasMirror {
+		t.Fatal("live smoke configuration must select either one custom endpoint or both official endpoints")
+	}
+	if !slices.Equal(primary.releaseIDs, mirror.releaseIDs) {
+		t.Errorf("default and mirror release search IDs differ: default=%v mirror=%v", primary.releaseIDs, mirror.releaseIDs)
+	}
+	if !slices.Equal(primary.releaseHashes, mirror.releaseHashes) {
+		t.Errorf("default and mirror release torrent hashes differ: default=%v mirror=%v", primary.releaseHashes, mirror.releaseHashes)
+	}
+}
+
+type liveEndpoint struct {
+	name string
+	base string
+}
+
+type liveObservation struct {
+	releaseIDs    []ReleaseID
+	releaseHashes []string
+}
+
+func liveSmokeEndpoints() []liveEndpoint {
+	if selectedBase := os.Getenv("ANILIBRIA_LIVE_BASE_URL"); selectedBase != "" {
+		return []liveEndpoint{{name: "selected", base: selectedBase}}
+	}
+
 	defaultBase := firstEnvironmentValue("ANILIBRIA_LIVE_DEFAULT_BASE_URL", "ANILIBRIA_API_BASE_URL")
 	if defaultBase == "" {
 		defaultBase = liveDefaultBase
@@ -29,32 +61,46 @@ func TestLiveAniLibertySmoke(t *testing.T) {
 		mirrorBase = liveMirrorBase
 	}
 
-	observations := make(map[string]liveObservation, 2)
-	for _, endpoint := range []struct {
-		name string
-		base string
-	}{
+	return []liveEndpoint{
 		{"default", defaultBase},
 		{"mirror", mirrorBase},
-	} {
-		t.Run(endpoint.name, func(t *testing.T) {
-			observations[endpoint.name] = observeLiveEndpoint(t, endpoint.base)
-		})
-	}
-
-	primary := observations["default"]
-	mirror := observations["mirror"]
-	if !slices.Equal(primary.releaseIDs, mirror.releaseIDs) {
-		t.Errorf("default and mirror release search IDs differ: default=%v mirror=%v", primary.releaseIDs, mirror.releaseIDs)
-	}
-	if !slices.Equal(primary.releaseHashes, mirror.releaseHashes) {
-		t.Errorf("default and mirror release torrent hashes differ: default=%v mirror=%v", primary.releaseHashes, mirror.releaseHashes)
 	}
 }
 
-type liveObservation struct {
-	releaseIDs    []ReleaseID
-	releaseHashes []string
+func observeConfiguredLiveEndpoints(
+	t *testing.T,
+	observe func(*testing.T, string) liveObservation,
+) map[string]liveObservation {
+	t.Helper()
+	endpoints := liveSmokeEndpoints()
+	observations := make(map[string]liveObservation, len(endpoints))
+	for _, endpoint := range endpoints {
+		t.Run(endpoint.name, func(t *testing.T) {
+			observations[endpoint.name] = observe(t, endpoint.base)
+		})
+	}
+
+	return observations
+}
+
+func TestLiveSmokeUsesSelectedBaseURL(t *testing.T) {
+	const selectedBase = "https://selected.invalid/api/v1/"
+	t.Setenv("ANILIBRIA_LIVE_BASE_URL", selectedBase)
+	t.Setenv("ANILIBRIA_LIVE_DEFAULT_BASE_URL", "https://default.invalid/api/v1/")
+	t.Setenv("ANILIBRIA_LIVE_MIRROR_BASE_URL", "https://mirror.invalid/api/v1/")
+
+	var contacted []string
+	observations := observeConfiguredLiveEndpoints(t, func(_ *testing.T, baseURL string) liveObservation {
+		contacted = append(contacted, baseURL)
+		return liveObservation{}
+	})
+
+	if !slices.Equal(contacted, []string{selectedBase}) {
+		t.Fatalf("contacted endpoints = %v, want only %s", contacted, selectedBase)
+	}
+	if _, ok := observations["selected"]; !ok {
+		t.Fatal("selected endpoint observation was not recorded")
+	}
 }
 
 func observeLiveEndpoint(t *testing.T, baseURL string) liveObservation {

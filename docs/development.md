@@ -62,10 +62,12 @@ explicitly:
 ANILIBRIA_LIVE_SMOKE=1 go test -run TestLiveAniLibertySmoke -v ./internal/anilibria
 ```
 
-Set `ANILIBRIA_LIVE_BASE_URL` to test an operator-selected API root. Running the
-test once against the default and once against the official mirror is useful
-before a stable release. A live failure is evidence to investigate; it must not
-lead to an automatic domain fallback.
+Set `ANILIBRIA_LIVE_BASE_URL` to contact only one operator-selected API root.
+Without that override, the test contacts and compares the default and official
+mirror roots. Those roots can be overridden independently with
+`ANILIBRIA_LIVE_DEFAULT_BASE_URL` (or the normal `ANILIBRIA_API_BASE_URL`) and
+`ANILIBRIA_LIVE_MIRROR_BASE_URL`. A live failure is evidence to investigate; it
+must not lead to an automatic domain fallback.
 
 ## Compatibility and release validation
 

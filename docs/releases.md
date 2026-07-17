@@ -50,24 +50,29 @@ Separate binary archives are not published for the first release.
   immutable image still exists and matches the release identity.
 - All required CI and first-release acceptance gates must pass before an image
   is published.
-- The workflow builds the image once and assigns all release tags to that same
-  image index; it does not rebuild `latest` separately.
-- The workflow publishes these image tags:
+- The tag workflow builds the image once and assigns both immutable release
+  tags to that same image index:
   - `ghcr.io/zenderg/anilibria-torznab:vX.Y.Z`
   - `ghcr.io/zenderg/anilibria-torznab:X.Y.Z`
-  - `ghcr.io/zenderg/anilibria-torznab:latest`
-- `latest` moves only for stable releases. Deployments should pin `vX.Y.Z`, or
-  the release digest when strict immutability is required.
 - The workflow creates a draft GitHub Release containing the image reference,
   image-index digest, supported platforms, and a verified Docker Compose
   snippet.
+- Publishing that draft triggers a separate promotion workflow. It verifies the
+  release tag, commit, immutable image digest, platform identities, highest
+  published stable semantic version, and GitHub's designated latest Release
+  before assigning `ghcr.io/zenderg/anilibria-torznab:latest` to the same image
+  index. It never rebuilds the image.
+- `latest` moves only after a stable GitHub Release is published. An abandoned
+  draft leaves the previous stable digest unchanged. Deployments should pin
+  `vX.Y.Z`, or the release digest when strict immutability is required.
 - A workflow rerun must not overwrite release notes that were already edited.
 - Final user-facing notes are reviewed before the GitHub Release is published.
 
-All three tags for a release must initially resolve to the same image-index
-digest. Version tags are immutable: after an image has been published, do not
-move or rebuild that version tag with different contents. A defect found after
-publication is fixed in a new patch release.
+After the GitHub Release is published and promotion succeeds, all three tags for
+that release must resolve to the same image-index digest. Version tags are
+immutable: after an image has been published, do not move or rebuild that
+version tag with different contents. A defect found after publication is fixed
+in a new patch release.
 
 Registry lookups fail closed. Only a confirmed manifest-not-found response
 proves that an immutable tag is available; authentication, DNS, rate-limit,
@@ -121,19 +126,25 @@ diff and user-visible impact rather than generated blindly from commit subjects.
 3. Review the changes since the previous release:
 
    ```bash
-   previous_tag=$(gh api repos/Zenderg/anilibria-torznab/releases/latest --jq .tag_name)
+   previous_tag=$(
+     gh api --paginate 'repos/Zenderg/anilibria-torznab/releases?per_page=100' \
+       --jq '.[] | select(.draft == false and .prerelease == false and .published_at != null) | .tag_name' |
+       bash scripts/release/select-latest-stable.sh
+   )
    docker buildx imagetools inspect "ghcr.io/zenderg/anilibria-torznab:${previous_tag}"
    git fetch origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}"
    git log --oneline "${previous_tag}..HEAD"
    ```
 
-   This baseline is the latest successfully published stable GitHub Release,
-   whose matching GHCR image is verified by the second command. Do not use
-   `git describe` for this decision: an annotated tag can remain after a failed
-   workflow even though no image or GitHub Release was published, and that tag
-   must not shorten the review range. For the first release, where the API
-   returns no previous published release, review the full history ending at the
-   intended release commit.
+   This baseline is the highest stable semantic version among successfully
+   published GitHub Releases, independent of publication timestamps. Its
+   matching GHCR image is verified by the second command. The promotion workflow
+   also requires GitHub's designated latest Release to match that canonical
+   version. Do not use `git describe` for this decision: an annotated tag can
+   remain after a failed workflow even though no image or GitHub Release was
+   published, and that tag must not shorten the review range. For the first
+   release, where the API returns no previous published release, review the full
+   history ending at the intended release commit.
 4. Create and push an annotated tag:
 
    ```bash
@@ -141,7 +152,8 @@ diff and user-visible impact rather than generated blindly from commit subjects.
    git push origin vX.Y.Z
    ```
 
-5. Wait for the release workflow to validate and publish the image.
+5. Wait for the release workflow to validate and publish the immutable version
+   image tags and create the draft Release.
 6. Verify that the exact versioned GHCR image has the recorded digest, starts
    through the release Compose example, runs as non-root, and reports healthy.
 7. Open the draft GitHub Release and write concise user-facing notes covering:
@@ -150,7 +162,10 @@ diff and user-visible impact rather than generated blindly from commit subjects.
    - breaking changes and required operator actions;
    - the versioned image reference and digest; and
    - rollback notes when the release changes operator-visible behavior.
-8. Publish the GitHub Release.
+8. Publish the GitHub Release with GitHub's "Set as the latest release" option
+   enabled.
+9. Wait for the promotion workflow and verify that `latest` resolves to the
+   recorded versioned image digest.
 
 Release notes live in GitHub Releases rather than in a repository changelog.
 The draft release may contain an automatically generated comparison as an

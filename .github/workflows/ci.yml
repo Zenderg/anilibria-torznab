@@ -26,6 +26,7 @@ jobs:
         run: |
           bash scripts/release/check-deployment-version.sh
           bash scripts/release/registry_test.sh
+          bash scripts/release/select-latest-stable_test.sh
       - name: Tests
         run: go test ./...
       - name: Race tests

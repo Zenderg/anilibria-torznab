@@ -31,7 +31,9 @@ cookies, authorization values, account data, or private tracker addresses.
 ## Opt-in live revalidation
 
 `TestLiveAniLibertySmoke` does not run during ordinary tests. Set
-`ANILIBRIA_LIVE_SMOKE=1` to enable it. The primary root can be overridden with
+`ANILIBRIA_LIVE_SMOKE=1` to enable it. Set `ANILIBRIA_LIVE_BASE_URL` to perform
+the read-only search, release-torrent, and latest requests against only one
+operator-selected root. Otherwise the primary root can be overridden with
 `ANILIBRIA_LIVE_DEFAULT_BASE_URL` (or the normal `ANILIBRIA_API_BASE_URL`), and
-the mirror root with `ANILIBRIA_LIVE_MIRROR_BASE_URL`. The smoke test performs
-read-only search, release-torrent, and latest requests against both roots.
+the mirror root with `ANILIBRIA_LIVE_MIRROR_BASE_URL`; the smoke test contacts
+and compares both roots.
