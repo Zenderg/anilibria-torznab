@@ -236,13 +236,16 @@ Failures are classified at boundaries:
 | unknown/unsupported operation | XML code `202` or `203` |
 | one release branch fails | log summary and return other branches |
 | all release branches fail | XML code `900` |
+| overall request deadline expires | discard partial work and return XML code `900` |
 | successful empty upstream result | empty successful RSS feed |
 | latest/search root call fails | XML code `900` |
 | client cancels request | stop work; HTTP layer records cancellation |
 
 Logs for branch failures include release ID, classified error, attempt count,
 and duration. They do not include raw queries, full URLs, API keys, or magnet
-links.
+links. Parent cancellation or deadline expiry takes priority over any completed
+fan-out branches and is observed again during result processing and RSS
+serialization.
 
 ## Authentication boundary
 
@@ -286,7 +289,10 @@ All logs are structured. A completed request log should include:
 - aggregate cache hit/miss information.
 
 Debug logging may add safe state transitions but must follow the same redaction
-rules. Metrics and tracing endpoints are outside first-release scope.
+rules. A failed or short response write records `write_failed` rather than the
+planned protocol outcome and never logs response content, request URLs, API
+keys, magnet data, or writer-provided error text. Metrics and tracing endpoints
+are outside first-release scope.
 
 ## Container design
 

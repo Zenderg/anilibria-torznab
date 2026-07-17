@@ -28,6 +28,9 @@ func TestCategoryMappingAndFiltering(t *testing.T) {
 		{stringPointer("5070"), false, true, true},
 		{stringPointer("5000,5070,9999"), true, true, true},
 		{stringPointer("9999"), false, false, true},
+		{stringPointer("2147483648"), false, false, true},
+		{stringPointer("18446744073709551615"), false, false, true},
+		{stringPointer("999999999999999999999999999999999999999999"), false, false, true},
 	}
 	for _, test := range tests {
 		filter, err := ParseCategoryFilter(test.raw)

@@ -2,6 +2,7 @@ package torznab
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ type Item struct {
 // count before paging; Offset is the validated requested offset.
 type Feed struct {
 	SiteBaseURL string
-	Offset      int
+	Offset      uint64
 	Total       int
 	Items       []Item
 }
@@ -75,8 +76,17 @@ func RenderCaps() ([]byte, error) {
 // RenderRSS renders a Torznab RSS 2.0 document. Invalid items are omitted so
 // that one XML-unsafe upstream value cannot make the entire feed malformed.
 func RenderRSS(feed Feed) ([]byte, error) {
-	if feed.Offset < 0 || feed.Total < 0 {
-		return nil, errors.New("feed offset and total must be non-negative")
+	return RenderRSSContext(context.Background(), feed)
+}
+
+// RenderRSSContext renders RSS while observing the overall request context
+// during item preparation and XML encoding.
+func RenderRSSContext(ctx context.Context, feed Feed) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if feed.Total < 0 {
+		return nil, errors.New("feed total must be non-negative")
 	}
 	baseURL, err := validateSiteBaseURL(feed.SiteBaseURL)
 	if err != nil {
@@ -95,12 +105,15 @@ func RenderRSS(feed Feed) ([]byte, error) {
 		},
 	}
 	for _, item := range feed.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		rendered, ok := prepareItem(item, baseURL)
 		if ok {
 			document.Channel.Items = append(document.Channel.Items, rendered)
 		}
 	}
-	return marshalDocument(document)
+	return marshalDocumentContext(ctx, document)
 }
 
 // FilterValidItems returns a copy containing only items RenderRSS can safely
@@ -264,6 +277,32 @@ func marshalDocument(value any) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
+func marshalDocumentContext(ctx context.Context, value any) ([]byte, error) {
+	var output bytes.Buffer
+	output.WriteString(xml.Header)
+	encoder := xml.NewEncoder(contextWriter{ctx: ctx, output: &output})
+	encoder.Indent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+
+type contextWriter struct {
+	ctx    context.Context
+	output *bytes.Buffer
+}
+
+func (w contextWriter) Write(data []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return w.output.Write(data)
+}
+
 type capsDocument struct {
 	XMLName    xml.Name       `xml:"caps"`
 	Server     capsServer     `xml:"server"`
@@ -324,8 +363,8 @@ type rssChannel struct {
 }
 
 type rssResponse struct {
-	Offset int `xml:"offset,attr"`
-	Total  int `xml:"total,attr"`
+	Offset uint64 `xml:"offset,attr"`
+	Total  int    `xml:"total,attr"`
 }
 
 type rssItem struct {

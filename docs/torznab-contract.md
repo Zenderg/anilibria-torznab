@@ -11,7 +11,7 @@ in [architecture.md](architecture.md), AniLiberty JSON in
 
 **Status:** first-release protocol baseline
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 The baseline references are the
 [Torznab 1.3 draft](https://torznab.github.io/spec-1.3-draft/torznab/Specification-v1.3.html)
@@ -24,7 +24,11 @@ ambiguous.
 
 - The API endpoint is `GET /api`.
 - Query parameter names are matched case-insensitively.
-- Query values are UTF-8 and URL-decoded exactly once.
+- Query values are URL-decoded exactly once and canonical parameter values must
+  be valid UTF-8. Invalid UTF-8 and malformed percent escapes produce error
+  `201` naming the affected canonical parameter when it can be identified.
+  Authentication still runs first; malformed syntax that cannot be attributed
+  safely uses `t` as the generic parameter.
 - Duplicate singleton parameters are an incorrect parameter error; do not pick
   one silently. `apikey` is the exception: missing or multiple values fail
   authentication with code `100` before other validation.
@@ -81,8 +85,8 @@ Parameters:
 | --- | --- | --- |
 | `q` | no | non-blank means text search; missing/blank means latest RSS |
 | `cat` | no | comma-separated standard category IDs |
-| `limit` | no | non-negative result count, default 50, clamped to maximum 50 |
-| `offset` | no | zero-based number to skip, default 0 |
+| `limit` | no | unsigned decimal result count, default 50, clamped to maximum 50 before integer conversion |
+| `offset` | no | unsigned 64-bit zero-based number to skip, default 0 |
 | `extended` | no | `0` or `1`; accepted for client compatibility |
 
 ### `tvsearch`
@@ -124,6 +128,8 @@ Upstream types map as follows:
 - `cat=5070` returns Anime results and excludes dorama;
 - unknown IDs are ignored when a supported ID is also present;
 - a list containing only unknown IDs returns an empty successful feed;
+- syntactically valid positive decimal IDs remain unknown and are ignored even
+  when they exceed the platform integer range;
 - malformed lists return error `201`; and
 - an item is emitted only once even when more than one requested category
   includes it.

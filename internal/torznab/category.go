@@ -1,7 +1,6 @@
 package torznab
 
 import (
-	"strconv"
 	"strings"
 )
 
@@ -53,14 +52,14 @@ func ParseCategoryFilter(raw *string) (CategoryFilter, error) {
 		if part == "" || strings.HasPrefix(part, "+") || strings.HasPrefix(part, "-") {
 			return CategoryFilter{}, &ParameterError{Parameter: ParameterCategory}
 		}
-		id, err := strconv.ParseUint(part, 10, 31)
-		if err != nil || id == 0 {
+		id, valid := positiveDecimal(part)
+		if !valid {
 			return CategoryFilter{}, &ParameterError{Parameter: ParameterCategory}
 		}
-		switch int(id) {
-		case CategoryTVID:
+		switch id {
+		case "5000":
 			filter.tv = true
-		case CategoryAnimeID:
+		case "5070":
 			filter.anime = true
 		}
 	}
@@ -85,4 +84,17 @@ func (f CategoryFilter) Matches(category Category) bool {
 // Present reports whether cat was supplied, including an all-unknown list.
 func (f CategoryFilter) Present() bool {
 	return f.present
+}
+
+func positiveDecimal(raw string) (string, bool) {
+	for _, character := range raw {
+		if character < '0' || character > '9' {
+			return "", false
+		}
+	}
+	normalized := strings.TrimLeft(raw, "0")
+	if normalized == "" {
+		return "", false
+	}
+	return normalized, true
 }

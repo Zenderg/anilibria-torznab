@@ -151,6 +151,66 @@ func TestDuplicateSingletonParametersAreRejectedCaseInsensitively(t *testing.T) 
 	}
 }
 
+func TestMalformedEscapesAreAttributedToCanonicalParameters(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rawQuery  string
+		parameter torznab.Parameter
+	}{
+		{"operation", "apikey=" + testAPIKey + "&t=%ZZ", torznab.ParameterType},
+		{"query", "apikey=" + testAPIKey + "&t=search&q=%ZZ", torznab.ParameterQuery},
+		{"category", "apikey=" + testAPIKey + "&t=search&cat=%ZZ", torznab.ParameterCategory},
+		{"limit", "apikey=" + testAPIKey + "&t=search&limit=%ZZ", torznab.ParameterLimit},
+		{"offset", "apikey=" + testAPIKey + "&t=search&offset=%ZZ", torznab.ParameterOffset},
+		{"extended", "apikey=" + testAPIKey + "&t=search&extended=%ZZ", torznab.ParameterExtended},
+		{"season", "apikey=" + testAPIKey + "&t=tvsearch&q=Title&season=%ZZ", torznab.ParameterSeason},
+		{"episode", "apikey=" + testAPIKey + "&t=tvsearch&q=Title&ep=%ZZ", torznab.ParameterEpisode},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			executor := newFakeExecutor()
+			api := newTestAPI(t, executor, nil, time.Second)
+			recorder := performRawQuery(api, test.rawQuery)
+			assertProtocolError(t, recorder, torznab.ErrorIncorrectParameter, "Incorrect parameter: "+string(test.parameter))
+			if len(executor.Requests()) != 0 {
+				t.Fatal("executor called for malformed query escape")
+			}
+		})
+	}
+}
+
+func TestInvalidUTF8ValuesAreRejectedAtHTTPBoundary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rawQuery  string
+		parameter torznab.Parameter
+	}{
+		{"operation", "apikey=" + testAPIKey + "&t=%FF", torznab.ParameterType},
+		{"query", "apikey=" + testAPIKey + "&t=search&q=%FF", torznab.ParameterQuery},
+		{"category", "apikey=" + testAPIKey + "&t=search&cat=%FF", torznab.ParameterCategory},
+		{"limit", "apikey=" + testAPIKey + "&t=search&limit=%FF", torznab.ParameterLimit},
+		{"offset", "apikey=" + testAPIKey + "&t=search&offset=%FF", torznab.ParameterOffset},
+		{"extended", "apikey=" + testAPIKey + "&t=search&extended=%FF", torznab.ParameterExtended},
+		{"season", "apikey=" + testAPIKey + "&t=tvsearch&q=Title&season=%FF", torznab.ParameterSeason},
+		{"episode", "apikey=" + testAPIKey + "&t=tvsearch&q=Title&ep=%FF", torznab.ParameterEpisode},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			executor := newFakeExecutor()
+			api := newTestAPI(t, executor, nil, time.Second)
+			recorder := performRawQuery(api, test.rawQuery)
+			assertProtocolError(t, recorder, torznab.ErrorIncorrectParameter, "Incorrect parameter: "+string(test.parameter))
+			if len(executor.Requests()) != 0 {
+				t.Fatal("executor called for invalid UTF-8")
+			}
+		})
+	}
+}
+
 func TestCapsIsAuthenticatedFixedAndDoesNotExecuteSearch(t *testing.T) {
 	t.Parallel()
 	executor := newFakeExecutor()
@@ -172,6 +232,55 @@ func TestCapsIsAuthenticatedFixedAndDoesNotExecuteSearch(t *testing.T) {
 	}
 	if len(executor.Requests()) != 0 {
 		t.Fatal("caps called executor")
+	}
+}
+
+func TestLargeNumericParametersFollowPagingAndCategoryContracts(t *testing.T) {
+	t.Parallel()
+	executor := newFakeExecutor()
+	executor.execute = func(_ context.Context, request service.Request) (service.Response, error) {
+		return service.Response{Feed: torznab.Feed{
+			SiteBaseURL: "https://aniliberty.top/",
+			Offset:      request.Offset,
+		}}, nil
+	}
+	api := newTestAPI(t, executor, nil, time.Second)
+	recorder := perform(api, http.MethodGet,
+		"/api?apikey="+testAPIKey+"&t=search&limit=2147483648&offset=2147483648&cat=2147483648")
+	assertXMLSuccess(t, recorder)
+	if !strings.Contains(recorder.Body.String(), `<newznab:response offset="2147483648"`) {
+		t.Fatalf("response did not retain the requested offset: %s", recorder.Body.String())
+	}
+
+	requests := executor.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("executor calls = %d, want 1", len(requests))
+	}
+	request := requests[0]
+	if request.Limit != 50 || request.Offset != uint64(1)<<31 {
+		t.Errorf("paging = limit %d offset %d", request.Limit, request.Offset)
+	}
+	if request.Categories.Matches(torznab.CategoryTV) || request.Categories.Matches(torznab.CategoryAnime) {
+		t.Error("large unknown category was not ignored")
+	}
+
+	executor = newFakeExecutor()
+	executor.execute = func(_ context.Context, request service.Request) (service.Response, error) {
+		return service.Response{Feed: torznab.Feed{
+			SiteBaseURL: "https://aniliberty.top/",
+			Offset:      request.Offset,
+		}}, nil
+	}
+	api = newTestAPI(t, executor, nil, time.Second)
+	recorder = perform(api, http.MethodGet,
+		"/api?apikey="+testAPIKey+"&t=search&limit=999999999999999999999999999999&offset=18446744073709551615")
+	assertXMLSuccess(t, recorder)
+	if !strings.Contains(recorder.Body.String(), `<newznab:response offset="18446744073709551615"`) {
+		t.Fatalf("response did not retain the maximum offset: %s", recorder.Body.String())
+	}
+	request = executor.Requests()[0]
+	if request.Limit != 50 || request.Offset != ^uint64(0) {
+		t.Errorf("maximum paging = limit %d offset %d", request.Limit, request.Offset)
 	}
 }
 
@@ -275,6 +384,18 @@ func TestRequestDeadlineMapsToUpstreamError(t *testing.T) {
 	assertProtocolError(t, recorder, torznab.ErrorUpstreamFailed, "Upstream request failed")
 }
 
+func TestRequestDeadlineOverridesSuccessfulExecutorResponse(t *testing.T) {
+	t.Parallel()
+	executor := newFakeExecutor()
+	executor.execute = func(ctx context.Context, _ service.Request) (service.Response, error) {
+		<-ctx.Done()
+		return newFakeExecutor().response, nil
+	}
+	api := newTestAPI(t, executor, nil, 10*time.Millisecond)
+	recorder := perform(api, http.MethodGet, "/api?apikey="+testAPIKey+"&t=search&q=Title")
+	assertProtocolError(t, recorder, torznab.ErrorUpstreamFailed, "Upstream request failed")
+}
+
 func TestRoutingFailuresAndHealth(t *testing.T) {
 	t.Parallel()
 	api := newTestAPI(t, newFakeExecutor(), nil, time.Second)
@@ -327,6 +448,26 @@ func TestStructuredLogsDoNotLeakQueryKeyOrInternalErrors(t *testing.T) {
 	}
 }
 
+func TestResponseWriteFailureIsLoggedInsteadOfSuccess(t *testing.T) {
+	t.Parallel()
+	const privateWriteError = "private controlled write detail"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	api := newTestAPI(t, newFakeExecutor(), logger, time.Second)
+	writer := &failingResponseWriter{err: errors.New(privateWriteError)}
+	request := httptest.NewRequest(http.MethodGet, "/api?apikey="+testAPIKey+"&t=search", nil)
+
+	api.ServeHTTP(writer, request)
+
+	logged := logs.String()
+	if !strings.Contains(logged, `"outcome":"write_failed"`) {
+		t.Fatalf("completed log did not report write failure: %s", logged)
+	}
+	if strings.Contains(logged, `"outcome":"success"`) || strings.Contains(logged, privateWriteError) {
+		t.Fatalf("completed log claimed success or leaked the write error: %s", logged)
+	}
+}
+
 func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	t.Parallel()
 	validExecutor := newFakeExecutor()
@@ -361,6 +502,35 @@ func perform(handler http.Handler, method, target string) *httptest.ResponseReco
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
+}
+
+func performRawQuery(handler http.Handler, rawQuery string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, "/api", nil)
+	request.URL.RawQuery = rawQuery
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+type failingResponseWriter struct {
+	header http.Header
+	status int
+	err    error
+}
+
+func (w *failingResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failingResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *failingResponseWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func assertXMLSuccess(t *testing.T, recorder *httptest.ResponseRecorder) {

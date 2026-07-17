@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Zenderg/anilibria-torznab/internal/service"
 	"github.com/Zenderg/anilibria-torznab/internal/torznab"
@@ -101,37 +103,30 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 	canonical := canonicalValues(values)
 	keys := canonical["apikey"]
 	if len(keys) != 1 || !a.authenticated(keys[0]) {
-		a.writeProtocolError(w, torznab.ErrorIncorrectCredentials, torznab.ParameterAPIKey)
-		a.logCompleted(requestID, "unknown", "authentication_failed", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectCredentials, torznab.ParameterAPIKey, requestID, "unknown", "authentication_failed", started, service.Stats{})
 		return
 	}
 	if parseErr != nil {
-		a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterType)
-		a.logCompleted(requestID, "unknown", "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectParameter, malformedQueryParameter(r.URL.RawQuery), requestID, "unknown", "invalid_request", started, service.Stats{})
 		return
 	}
 
-	for name, parameter := range knownParameters {
-		if name == "apikey" {
-			continue
-		}
-		if len(canonical[name]) > 1 {
-			a.writeProtocolError(w, torznab.ErrorIncorrectParameter, parameter)
-			a.logCompleted(requestID, "unknown", "invalid_request", http.StatusOK, started, service.Stats{})
+	for _, name := range singletonParameters {
+		entries := canonical[name]
+		if len(entries) > 1 || !validUTF8Values(entries) {
+			a.completeProtocolError(w, torznab.ErrorIncorrectParameter, knownParameters[name], requestID, "unknown", "invalid_request", started, service.Stats{})
 			return
 		}
 	}
 
 	operationValues := canonical["t"]
 	if len(operationValues) == 0 {
-		a.writeProtocolError(w, torznab.ErrorMissingParameter, torznab.ParameterType)
-		a.logCompleted(requestID, "unknown", "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorMissingParameter, torznab.ParameterType, requestID, "unknown", "invalid_request", started, service.Stats{})
 		return
 	}
 	operation := strings.ToLower(strings.TrimSpace(operationValues[0]))
 	if operation == "" {
-		a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterType)
-		a.logCompleted(requestID, "unknown", "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterType, requestID, "unknown", "invalid_request", started, service.Stats{})
 		return
 	}
 
@@ -143,56 +138,53 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 	case "caps":
 		body, err := torznab.RenderCaps()
 		if err != nil {
-			a.writeInternalError(w)
-			a.logCompleted(requestID, operation, "serialization_failed", http.StatusInternalServerError, started, service.Stats{})
+			writeErr := a.writeInternalError(w)
+			a.logWriteResult(writeErr, requestID, operation, "serialization_failed", http.StatusInternalServerError, started, service.Stats{})
 			return
 		}
-		a.writeXML(w, body)
-		a.logCompleted(requestID, operation, "success", http.StatusOK, started, service.Stats{})
+		if a.stopForContext(w, r.Context(), requestID, operation, started, service.Stats{}) {
+			return
+		}
+		writeErr := a.writeXML(w, body)
+		a.logWriteResult(writeErr, requestID, operation, "success", http.StatusOK, started, service.Stats{})
 		return
 	case "search", "tvsearch":
 		a.serveSearch(w, r, canonical, requestID, operation, started)
 		return
 	default:
 		if unavailableFunctions[operation] {
-			a.writeProtocolError(w, torznab.ErrorFunctionUnavailable, torznab.ParameterType)
+			a.completeProtocolError(w, torznab.ErrorFunctionUnavailable, torznab.ParameterType, requestID, "unknown", "unsupported_operation", started, service.Stats{})
 		} else {
-			a.writeProtocolError(w, torznab.ErrorNoSuchFunction, torznab.ParameterType)
+			a.completeProtocolError(w, torznab.ErrorNoSuchFunction, torznab.ParameterType, requestID, "unknown", "unsupported_operation", started, service.Stats{})
 		}
-		a.logCompleted(requestID, "unknown", "unsupported_operation", http.StatusOK, started, service.Stats{})
 	}
 }
 
 func (a *API) serveSearch(w http.ResponseWriter, r *http.Request, values map[string][]string, requestID, operation string, started time.Time) {
 	query, queryProvided := single(values, "q")
 	if operation == "tvsearch" && !queryProvided {
-		a.writeProtocolError(w, torznab.ErrorMissingParameter, torznab.ParameterQuery)
-		a.logCompleted(requestID, operation, "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorMissingParameter, torznab.ParameterQuery, requestID, operation, "invalid_request", started, service.Stats{})
 		return
 	}
 
 	categoryRaw, _ := singlePointer(values, "cat")
 	categories, err := torznab.ParseCategoryFilter(categoryRaw)
 	if err != nil {
-		a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterCategory)
-		a.logCompleted(requestID, operation, "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterCategory, requestID, operation, "invalid_request", started, service.Stats{})
 		return
 	}
-	limit, ok := parseBoundedCount(values, "limit", 50, 50)
+	limit, ok := parseLimit(values)
 	if !ok {
-		a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterLimit)
-		a.logCompleted(requestID, operation, "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterLimit, requestID, operation, "invalid_request", started, service.Stats{})
 		return
 	}
-	offset, ok := parseBoundedCount(values, "offset", 0, -1)
+	offset, ok := parseOffset(values)
 	if !ok {
-		a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterOffset)
-		a.logCompleted(requestID, operation, "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterOffset, requestID, operation, "invalid_request", started, service.Stats{})
 		return
 	}
 	if extended, present := single(values, "extended"); present && extended != "0" && extended != "1" {
-		a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterExtended)
-		a.logCompleted(requestID, operation, "invalid_request", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.ParameterExtended, requestID, operation, "invalid_request", started, service.Stats{})
 		return
 	}
 	season, _ := singlePointer(values, "season")
@@ -209,34 +201,35 @@ func (a *API) serveSearch(w http.ResponseWriter, r *http.Request, values map[str
 		Offset:          offset,
 	})
 	if executeErr != nil {
-		if errors.Is(r.Context().Err(), context.Canceled) {
-			a.logCompleted(requestID, operation, "cancelled", 499, started, service.Stats{})
-			return
-		}
-		if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
-			a.writeProtocolError(w, torznab.ErrorUpstreamFailed, torznab.ParameterType)
-			a.logCompleted(requestID, operation, "deadline_exceeded", http.StatusOK, started, service.Stats{})
+		if a.stopForContext(w, r.Context(), requestID, operation, started, service.Stats{}) {
 			return
 		}
 		var serviceError *service.Error
 		if errors.As(executeErr, &serviceError) && serviceError.Kind == service.ErrorIncorrectParameter {
-			a.writeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.Parameter(serviceError.Parameter))
-			a.logCompleted(requestID, operation, "invalid_request", http.StatusOK, started, service.Stats{})
+			a.completeProtocolError(w, torznab.ErrorIncorrectParameter, torznab.Parameter(serviceError.Parameter), requestID, operation, "invalid_request", started, service.Stats{})
 			return
 		}
-		a.writeProtocolError(w, torznab.ErrorUpstreamFailed, torznab.ParameterType)
-		a.logCompleted(requestID, operation, "upstream_failed", http.StatusOK, started, service.Stats{})
+		a.completeProtocolError(w, torznab.ErrorUpstreamFailed, torznab.ParameterType, requestID, operation, "upstream_failed", started, service.Stats{})
+		return
+	}
+	if a.stopForContext(w, r.Context(), requestID, operation, started, response.Stats) {
 		return
 	}
 
-	body, renderErr := torznab.RenderRSS(response.Feed)
+	body, renderErr := torznab.RenderRSSContext(r.Context(), response.Feed)
 	if renderErr != nil {
-		a.writeInternalError(w)
-		a.logCompleted(requestID, operation, "serialization_failed", http.StatusInternalServerError, started, response.Stats)
+		if a.stopForContext(w, r.Context(), requestID, operation, started, response.Stats) {
+			return
+		}
+		writeErr := a.writeInternalError(w)
+		a.logWriteResult(writeErr, requestID, operation, "serialization_failed", http.StatusInternalServerError, started, response.Stats)
 		return
 	}
-	a.writeXML(w, body)
-	a.logCompleted(requestID, operation, "success", http.StatusOK, started, response.Stats)
+	if a.stopForContext(w, r.Context(), requestID, operation, started, response.Stats) {
+		return
+	}
+	writeErr := a.writeXML(w, body)
+	a.logWriteResult(writeErr, requestID, operation, "success", http.StatusOK, started, response.Stats)
 }
 
 func (a *API) authenticated(value string) bool {
@@ -248,23 +241,71 @@ func (a *API) nextRequestID() string {
 	return a.requestPrefix + "-" + strconv.FormatUint(a.requestCounter.Add(1), 10)
 }
 
-func (a *API) writeProtocolError(w http.ResponseWriter, code torznab.ErrorCode, parameter torznab.Parameter) {
+func (a *API) writeProtocolError(w http.ResponseWriter, code torznab.ErrorCode, parameter torznab.Parameter) error {
 	body, err := torznab.RenderError(code, parameter)
 	if err != nil {
-		a.writeInternalError(w)
-		return
+		return a.writeInternalError(w)
 	}
-	a.writeXML(w, body)
+	return a.writeXML(w, body)
 }
 
-func (a *API) writeXML(w http.ResponseWriter, body []byte) {
+func (a *API) writeXML(w http.ResponseWriter, body []byte) error {
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	return writeBody(w, body)
 }
 
-func (a *API) writeInternalError(w http.ResponseWriter) {
-	http.Error(w, "internal server error", http.StatusInternalServerError)
+func (a *API) writeInternalError(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusInternalServerError)
+	return writeBody(w, []byte("internal server error\n"))
+}
+
+func writeBody(w http.ResponseWriter, body []byte) error {
+	written, err := w.Write(body)
+	if err == nil && written != len(body) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
+func (a *API) completeProtocolError(
+	w http.ResponseWriter,
+	code torznab.ErrorCode,
+	parameter torznab.Parameter,
+	requestID, operation, outcome string,
+	started time.Time,
+	stats service.Stats,
+) {
+	writeErr := a.writeProtocolError(w, code, parameter)
+	a.logWriteResult(writeErr, requestID, operation, outcome, http.StatusOK, started, stats)
+}
+
+func (a *API) stopForContext(
+	w http.ResponseWriter,
+	ctx context.Context,
+	requestID, operation string,
+	started time.Time,
+	stats service.Stats,
+) bool {
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		a.logCompleted(requestID, operation, "cancelled", 499, started, stats)
+		return true
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		a.completeProtocolError(w, torznab.ErrorUpstreamFailed, torznab.ParameterType, requestID, operation, "deadline_exceeded", started, stats)
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *API) logWriteResult(writeErr error, requestID, operation, outcome string, status int, started time.Time, stats service.Stats) {
+	if writeErr != nil {
+		outcome = "write_failed"
+	}
+	a.logCompleted(requestID, operation, outcome, status, started, stats)
 }
 
 func (a *API) logCompleted(requestID, operation, outcome string, status int, started time.Time, stats service.Stats) {
@@ -294,6 +335,8 @@ var knownParameters = map[string]torznab.Parameter{
 	"ep":       torznab.ParameterEpisode,
 }
 
+var singletonParameters = []string{"t", "q", "cat", "limit", "offset", "extended", "season", "ep"}
+
 var unavailableFunctions = map[string]bool{
 	"book": true, "details": true, "get": true, "genres": true,
 	"movie": true, "music": true, "register": true,
@@ -306,6 +349,36 @@ func canonicalValues(values url.Values) map[string][]string {
 		result[canonical] = append(result[canonical], entries...)
 	}
 	return result
+}
+
+func malformedQueryParameter(rawQuery string) torznab.Parameter {
+	for _, field := range strings.Split(rawQuery, "&") {
+		rawName, rawValue, _ := strings.Cut(field, "=")
+		name, err := url.QueryUnescape(rawName)
+		if err != nil {
+			continue
+		}
+		parameter, known := knownParameters[strings.ToLower(name)]
+		if !known {
+			continue
+		}
+		if strings.Contains(field, ";") {
+			return parameter
+		}
+		if _, err := url.QueryUnescape(rawValue); err != nil {
+			return parameter
+		}
+	}
+	return torznab.ParameterType
+}
+
+func validUTF8Values(values []string) bool {
+	for _, value := range values {
+		if !utf8.ValidString(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func single(values map[string][]string, name string) (string, bool) {
@@ -324,21 +397,50 @@ func singlePointer(values map[string][]string, name string) (*string, bool) {
 	return &value, true
 }
 
-func parseBoundedCount(values map[string][]string, name string, defaultValue, maximum int) (int, bool) {
-	raw, present := single(values, name)
+func parseLimit(values map[string][]string) (int, bool) {
+	raw, present := single(values, "limit")
 	if !present {
-		return defaultValue, true
+		return 50, true
 	}
-	if raw == "" || strings.HasPrefix(raw, "+") || strings.HasPrefix(raw, "-") {
+	normalized, ok := normalizedDecimal(raw)
+	if !ok {
 		return 0, false
 	}
-	parsed, err := strconv.ParseUint(raw, 10, 31)
+	if len(normalized) > 2 || len(normalized) == 2 && normalized > "50" {
+		return 50, true
+	}
+	parsed, err := strconv.ParseUint(normalized, 10, 8)
 	if err != nil {
 		return 0, false
 	}
-	value := int(parsed)
-	if maximum >= 0 && value > maximum {
-		value = maximum
+	return int(parsed), true
+}
+
+func parseOffset(values map[string][]string) (uint64, bool) {
+	raw, present := single(values, "offset")
+	if !present {
+		return 0, true
 	}
-	return value, true
+	normalized, ok := normalizedDecimal(raw)
+	if !ok {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(normalized, 10, 64)
+	return parsed, err == nil
+}
+
+func normalizedDecimal(raw string) (string, bool) {
+	if raw == "" || strings.HasPrefix(raw, "+") || strings.HasPrefix(raw, "-") {
+		return "", false
+	}
+	for _, character := range raw {
+		if character < '0' || character > '9' {
+			return "", false
+		}
+	}
+	normalized := strings.TrimLeft(raw, "0")
+	if normalized == "" {
+		return "0", true
+	}
+	return normalized, true
 }

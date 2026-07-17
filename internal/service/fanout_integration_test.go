@@ -76,7 +76,7 @@ func TestRealClientServiceFanoutProtection(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
 		started := time.Now()
-		response, err := searchService.Execute(ctx, integratedRequest(t))
+		_, err := searchService.Execute(ctx, integratedRequest(t))
 		elapsed := time.Since(started)
 
 		if ctx.Err() != context.DeadlineExceeded {
@@ -89,8 +89,8 @@ func TestRealClientServiceFanoutProtection(t *testing.T) {
 		if releaseCalls == 0 || releaseCalls >= 10 {
 			t.Fatalf("release attempts before deadline = %d, want 1..9", releaseCalls)
 		}
-		if err == nil && len(response.Feed.Items) >= 10 {
-			t.Fatalf("deadline unexpectedly produced all results: %d", len(response.Feed.Items))
+		if err == nil {
+			t.Fatal("deadline returned a successful partial response")
 		}
 	})
 }

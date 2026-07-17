@@ -26,7 +26,7 @@ type Request struct {
 	ExplicitEpisode *string
 	Categories      torznab.CategoryFilter
 	Limit           int
-	Offset          int
+	Offset          uint64
 }
 
 // Stats contains safe request diagnostics for structured logging.
@@ -129,6 +129,9 @@ func New(client Client, cfg Config) (*Service, error) {
 
 // Execute performs a text search, TV search, or latest-window request.
 func (s *Service) Execute(ctx context.Context, req Request) (Response, error) {
+	if ctx.Err() != nil {
+		return Response{}, &Error{Kind: ErrorUpstream}
+	}
 	normalized, err := torznab.NormalizeQuery(req.Query, req.ExplicitSeason, req.ExplicitEpisode)
 	if err != nil {
 		var parameterError *torznab.ParameterError
@@ -159,11 +162,23 @@ func (s *Service) Execute(ctx context.Context, req Request) (Response, error) {
 			return Response{}, err
 		}
 	}
+	if ctx.Err() != nil {
+		return Response{}, &Error{Kind: ErrorUpstream}
+	}
 
-	items := s.process(torrents, req.Categories, normalized.EffectiveSeason, normalized.EffectiveEpisode)
+	items, err := s.process(ctx, torrents, req.Categories, normalized.EffectiveSeason, normalized.EffectiveEpisode)
+	if err != nil {
+		return Response{}, &Error{Kind: ErrorUpstream}
+	}
 	items = torznab.FilterValidItems(items, s.config.SiteBaseURL)
+	if ctx.Err() != nil {
+		return Response{}, &Error{Kind: ErrorUpstream}
+	}
 	total := len(items)
 	page := pageItems(items, req.Offset, req.Limit)
+	if ctx.Err() != nil {
+		return Response{}, &Error{Kind: ErrorUpstream}
+	}
 	stats := Stats{
 		ReleaseCount:   int(counters.releaseCount.Load()),
 		FailedBranches: int(counters.failedBranches.Load()),
@@ -214,6 +229,9 @@ func (s *Service) loadSearch(ctx context.Context, query string, counters *reques
 		}()
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, &Error{Kind: ErrorUpstream}
+	}
 
 	flattened := make([]anilibria.Torrent, 0)
 	succeeded := 0
@@ -305,10 +323,13 @@ func (s *Service) loadLatest(ctx context.Context, counters *requestCounters) ([]
 	return cloneTorrents(value), err
 }
 
-func (s *Service) process(torrents []anilibria.Torrent, categories torznab.CategoryFilter, season, episode *int) []torznab.Item {
+func (s *Service) process(ctx context.Context, torrents []anilibria.Torrent, categories torznab.CategoryFilter, season, episode *int) ([]torznab.Item, error) {
 	seen := make(map[string]struct{}, len(torrents))
 	items := make([]torznab.Item, 0, len(torrents))
 	for _, torrent := range torrents {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		hash := strings.ToLower(torrent.Hash)
 		if _, exists := seen[hash]; exists {
 			continue
@@ -354,13 +375,19 @@ func (s *Service) process(torrents []anilibria.Torrent, categories torznab.Categ
 			Year:           year,
 		})
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if !items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
 			return items[i].UpdatedAt.After(items[j].UpdatedAt)
 		}
 		return items[i].InfoHash < items[j].InfoHash
 	})
-	return items
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 func distinctReleaseIDs(input []anilibria.ReleaseID, limit int) []anilibria.ReleaseID {
@@ -379,12 +406,13 @@ func distinctReleaseIDs(input []anilibria.ReleaseID, limit int) []anilibria.Rele
 	return result
 }
 
-func pageItems(items []torznab.Item, offset, limit int) []torznab.Item {
-	if offset >= len(items) || limit == 0 {
+func pageItems(items []torznab.Item, offset uint64, limit int) []torznab.Item {
+	if offset >= uint64(len(items)) || limit == 0 {
 		return []torznab.Item{}
 	}
-	end := min(len(items), offset+limit)
-	return append([]torznab.Item(nil), items[offset:end]...)
+	start := int(offset)
+	end := start + min(limit, len(items)-start)
+	return append([]torznab.Item(nil), items[start:end]...)
 }
 
 func cloneIDs(input []anilibria.ReleaseID) []anilibria.ReleaseID {

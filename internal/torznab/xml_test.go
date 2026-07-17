@@ -1,7 +1,9 @@
 package torznab
 
 import (
+	"context"
 	"encoding/xml"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -140,6 +142,16 @@ func TestRenderRSSFiltersXMLUnsafeAndOverflowItems(t *testing.T) {
 		if ValidXML10String(value) {
 			t.Errorf("ValidXML10String(%q) = true", value)
 		}
+	}
+}
+
+func TestRenderRSSContextRejectsExpiredRequest(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := RenderRSSContext(ctx, Feed{SiteBaseURL: "https://example.test/"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RenderRSSContext() error = %v, want context.Canceled", err)
 	}
 }
 
