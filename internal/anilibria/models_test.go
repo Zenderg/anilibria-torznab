@@ -3,6 +3,7 @@ package anilibria
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,9 @@ func TestValidateTorrentRejectsInvalidRequiredFields(t *testing.T) {
 		{"unknown type", "release.type.value", func(value *rawTorrent) { value.Release.Type.Value = "FUTURE" }},
 		{"invalid timestamp", "updated_at", func(value *rawTorrent) { value.UpdatedAt = "today" }},
 		{"HTTP URI", "magnet", func(value *rawTorrent) { value.Magnet = "https://example.test/file" }},
+		{"empty magnet", "magnet", func(value *rawTorrent) { value.Magnet = "magnet:" }},
+		{"magnet without exact topic", "magnet", func(value *rawTorrent) { value.Magnet = "magnet:?dn=Example" }},
+		{"mismatched exact topic", "magnet", func(value *rawTorrent) { value.Magnet = "magnet:?xt=urn:btih:" + strings.Repeat("1", 40) }},
 		{"empty label", "label", func(value *rawTorrent) { value.Label = "" }},
 		{"XML control in name", "release.name.main", func(value *rawTorrent) { value.Release.Name.Main = "bad\x01name" }},
 		{"empty alias", "release.alias", func(value *rawTorrent) { value.Release.Alias = "" }},
@@ -55,6 +59,34 @@ func TestValidateTorrentRejectsInvalidRequiredFields(t *testing.T) {
 				t.Fatalf("validateTorrent field=%q err=%v, want field=%q", field, err, test.field)
 			}
 		})
+	}
+}
+
+func TestValidateTorrentAcceptsMatchingInfoHashCaseInsensitively(t *testing.T) {
+	t.Parallel()
+	raw := rawTorrent{
+		Hash:           strings.ToUpper(testHash),
+		Size:           "1",
+		Label:          "label",
+		Magnet:         "magnet:?dn=Example&xt=URN:BTIH:" + strings.ToUpper(testHash) + "&tr=https%3A%2F%2Ftracker.example",
+		Seeders:        "0",
+		Leechers:       "0",
+		CompletedTimes: "0",
+		UpdatedAt:      "2026-07-16T10:11:12Z",
+		Release: rawRelease{
+			ID:    "413",
+			Type:  rawType{Value: "TV"},
+			Year:  "2026",
+			Name:  rawName{Main: "name"},
+			Alias: "alias",
+		},
+	}
+	torrent, field, err := validateTorrent(raw)
+	if err != nil {
+		t.Fatalf("validateTorrent rejected %s: %v", field, err)
+	}
+	if torrent.Hash != testHash {
+		t.Fatalf("normalized hash = %q", torrent.Hash)
 	}
 }
 

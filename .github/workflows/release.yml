@@ -20,6 +20,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       commit: ${{ steps.version.outputs.commit }}
       build_date: ${{ steps.version.outputs.build_date }}
+      published_rerun: ${{ steps.version.outputs.published_rerun }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -27,6 +28,8 @@ jobs:
           persist-credentials: false
       - id: version
         name: Validate release tag and derive build metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           tag=${GITHUB_REF_NAME}
@@ -43,11 +46,47 @@ jobs:
           commit=$(git rev-parse "${tag}^{commit}")
           git merge-base --is-ancestor "$commit" origin/main
           build_date=$(git show --no-patch --format=%cI "$commit")
+          version=${tag#v}
+          published_rerun=false
+
+          latest_release=$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | "\(.published_at) \(.tag_name)"' |
+              sort |
+              tail -n 1
+          )
+          latest_tag=${latest_release#* }
+          if [[ -n "$latest_tag" ]]; then
+            if [[ ! "$latest_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "latest published release is not a stable version: $latest_tag" >&2
+              exit 1
+            fi
+
+            git fetch --force origin "refs/tags/${latest_tag}:refs/tags/${latest_tag}"
+            latest_commit=$(git rev-parse "${latest_tag}^{commit}")
+            latest_version=${latest_tag#v}
+
+            if [[ "$tag" == "$latest_tag" ]]; then
+              published_rerun=true
+            else
+              newest_version=$(printf '%s\n' "$latest_version" "$version" | sort -V | tail -n 1)
+              if [[ "$newest_version" != "$version" || "$version" == "$latest_version" ]]; then
+                echo "release version $tag must be newer than published release $latest_tag" >&2
+                exit 1
+              fi
+              if [[ "$commit" == "$latest_commit" ]] ||
+                 ! git merge-base --is-ancestor "$latest_commit" "$commit"; then
+                echo "release commit must advance published release $latest_tag" >&2
+                exit 1
+              fi
+            fi
+          fi
 
           {
-            echo "version=${tag#v}"
+            echo "version=$version"
             echo "commit=$commit"
             echo "build_date=$build_date"
+            echo "published_rerun=$published_rerun"
           } >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
@@ -56,6 +95,8 @@ jobs:
       - name: Quality gates
         run: |
           test -z "$(gofmt -l .)"
+          bash scripts/release/check-deployment-version.sh
+          bash scripts/release/registry_test.sh
           go test ./...
           go test -race ./...
           go vet ./...
@@ -90,40 +131,69 @@ jobs:
         name: Detect an existing immutable version
         env:
           VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          PUBLISHED_RERUN: ${{ needs.validate.outputs.published_rerun }}
         shell: bash
         run: |
           version_ref="${IMAGE_NAME}:${GITHUB_REF_NAME}"
-          if docker buildx imagetools inspect "$version_ref" >/dev/null 2>&1; then
-            digest=$(docker buildx imagetools inspect "$version_ref" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
-            bare_digest=$(docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
-            if [[ -z "$digest" || "$digest" != "$bare_digest" ]]; then
-              echo "existing immutable version tags are incomplete or disagree" >&2
+          bare_ref="${IMAGE_NAME}:${VERSION}"
+          source scripts/release/registry.sh
+          version_state=$(registry_ref_state "$version_ref")
+          bare_state=$(registry_ref_state "$bare_ref")
+
+          if [[ "$version_state" == "absent" && "$bare_state" == "absent" ]]; then
+            if [[ "$PUBLISHED_RERUN" == "true" ]]; then
+              echo "published release image is missing; refusing to rebuild it" >&2
               exit 1
             fi
-
-            raw=$(docker buildx imagetools inspect "${IMAGE_NAME}@${digest}" --raw)
-            amd64=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty' <<< "$raw")
-            arm64=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")][0].digest // empty' <<< "$raw")
-            if [[ -z "$amd64" || -z "$arm64" ]]; then
-              echo "existing version is not the required amd64/arm64 image index" >&2
-              exit 1
-            fi
-
-            {
-              echo "found=true"
-              echo "digest=$digest"
-              echo "amd64=$amd64"
-              echo "arm64=$arm64"
-            } >> "$GITHUB_OUTPUT"
-            echo "version image already exists; it will be verified but never overwritten"
+            echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          if docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
-            echo "bare version tag exists without the v-prefixed immutable tag" >&2
+          if [[ "$version_state" != "exists" || "$bare_state" != "exists" ]]; then
+            echo "existing immutable version tags are incomplete" >&2
             exit 1
           fi
-          echo "found=false" >> "$GITHUB_OUTPUT"
+
+          digest=$(docker buildx imagetools inspect "$version_ref" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
+          bare_digest=$(docker buildx imagetools inspect "$bare_ref" | awk '$1 == "Digest:" && digest == "" {digest=$2} END {print digest}')
+          if [[ -z "$digest" || "$digest" != "$bare_digest" ]]; then
+            echo "existing immutable version tags are incomplete or disagree" >&2
+            exit 1
+          fi
+
+          raw=$(docker buildx imagetools inspect "${IMAGE_NAME}@${digest}" --raw)
+          amd64=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty' <<< "$raw")
+          arm64=$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")][0].digest // empty' <<< "$raw")
+          if [[ -z "$amd64" || -z "$arm64" ]]; then
+            echo "existing version is not the required amd64/arm64 image index" >&2
+            exit 1
+          fi
+
+          verify_platform_identity() {
+            local platform=$1
+            local metadata
+            local image_version
+            local image_revision
+
+            metadata=$(docker buildx imagetools inspect "$version_ref" --format "{{json (index .Image \"$platform\")}}")
+            image_version=$(jq -r '.config.Labels["org.opencontainers.image.version"] // empty' <<< "$metadata")
+            image_revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<< "$metadata")
+            if [[ "$image_version" != "$GITHUB_REF_NAME" || "$image_revision" != "$RELEASE_COMMIT" ]]; then
+              echo "existing $platform image identity does not match $GITHUB_REF_NAME at $RELEASE_COMMIT" >&2
+              exit 1
+            fi
+          }
+          verify_platform_identity linux/amd64
+          verify_platform_identity linux/arm64
+
+          {
+            echo "found=true"
+            echo "digest=$digest"
+            echo "amd64=$amd64"
+            echo "arm64=$arm64"
+          } >> "$GITHUB_OUTPUT"
+          echo "version image already exists; it will be verified but never overwritten"
+          exit 0
 
       - id: build_amd64
         if: steps.existing.outputs.found != 'true'
@@ -158,6 +228,9 @@ jobs:
         env:
           API_KEY: release-test-key
           AMD64_DIGEST: ${{ steps.amd64.outputs.digest }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_BUILD_DATE: ${{ needs.validate.outputs.build_date }}
         shell: bash
         run: |
           export IMAGE="${IMAGE_NAME}@${AMD64_DIGEST}"
@@ -171,6 +244,10 @@ jobs:
           "${compose[@]}" config --quiet
           "${compose[@]}" pull
           test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = "65532:65532"
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')" = "$RELEASE_TAG"
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$RELEASE_COMMIT"
+          expected_version="anilibria-torznab ${RELEASE_TAG} (commit ${RELEASE_COMMIT}, built ${RELEASE_BUILD_DATE})"
+          test "$(docker run --rm "$IMAGE" version)" = "$expected_version"
           "${compose[@]}" up --detach --no-build
 
           id=$("${compose[@]}" ps --quiet anilibria-torznab)
@@ -232,9 +309,12 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
           AMD64_DIGEST: ${{ steps.platforms.outputs.amd64 }}
           ARM64_DIGEST: ${{ steps.platforms.outputs.arm64 }}
+        shell: bash
         run: |
-          if docker buildx imagetools inspect "${IMAGE_NAME}:${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
-             docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+          source scripts/release/registry.sh
+          version_state=$(registry_ref_state "${IMAGE_NAME}:${GITHUB_REF_NAME}")
+          bare_state=$(registry_ref_state "${IMAGE_NAME}:${VERSION}")
+          if [[ "$version_state" != "absent" || "$bare_state" != "absent" ]]; then
             echo "a version tag appeared after preflight; refusing to overwrite it" >&2
             exit 1
           fi

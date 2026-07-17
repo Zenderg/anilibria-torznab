@@ -187,7 +187,7 @@ func (client *Client) TorrentsByRelease(ctx context.Context, releaseID ReleaseID
 			return err
 		}
 		var err error
-		torrents, err = client.validTorrents(ctx, "torrents_by_release", raw)
+		torrents, err = client.validTorrents(ctx, "torrents_by_release", raw, releaseID)
 		return err
 	}); err != nil {
 		return nil, err
@@ -217,8 +217,11 @@ func (client *Client) Latest(ctx context.Context) ([]Torrent, error) {
 		if err := decodeJSON(ctx, trimmed, &raw); err != nil {
 			return err
 		}
+		if len(raw) > latestLimit {
+			raw = raw[:latestLimit]
+		}
 		var err error
-		torrents, err = client.validTorrents(ctx, "latest", raw)
+		torrents, err = client.validTorrents(ctx, "latest", raw, 0)
 		return err
 	}); err != nil {
 		return nil, err
@@ -226,7 +229,7 @@ func (client *Client) Latest(ctx context.Context) ([]Torrent, error) {
 	return torrents, nil
 }
 
-func (client *Client) validTorrents(ctx context.Context, operation string, raw []rawTorrent) ([]Torrent, error) {
+func (client *Client) validTorrents(ctx context.Context, operation string, raw []rawTorrent, expectedReleaseID ReleaseID) ([]Torrent, error) {
 	torrents := make([]Torrent, 0, len(raw))
 	invalidCount := 0
 	for index, item := range raw {
@@ -234,6 +237,10 @@ func (client *Client) validTorrents(ctx context.Context, operation string, raw [
 			return nil, err
 		}
 		torrent, field, err := validateTorrent(item)
+		if err == nil && expectedReleaseID > 0 && torrent.Release.ID != expectedReleaseID {
+			field = "release.id"
+			err = fmt.Errorf("torrent release does not match requested release")
+		}
 		if err != nil {
 			invalidCount++
 			if invalidCount <= invalidTorrentLogSampleLimit {

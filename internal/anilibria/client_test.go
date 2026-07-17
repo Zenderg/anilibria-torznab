@@ -171,7 +171,7 @@ func TestInvalidTorrentWarningsAreBounded(t *testing.T) {
 	const invalidItems = 10_000
 	var logs bytes.Buffer
 	client := &Client{logger: slog.New(slog.NewTextHandler(&logs, nil))}
-	torrents, err := client.validTorrents(context.Background(), "latest", make([]rawTorrent, invalidItems))
+	torrents, err := client.validTorrents(context.Background(), "latest", make([]rawTorrent, invalidItems), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +191,95 @@ func TestInvalidTorrentWarningsAreBounded(t *testing.T) {
 		if !strings.Contains(logOutput, required) {
 			t.Errorf("aggregate log missing %q: %s", required, logOutput)
 		}
+	}
+}
+
+func TestInvalidSourceStringEncodingIsOmittedPerTorrent(t *testing.T) {
+	t.Parallel()
+
+	fields := []struct {
+		name   string
+		target string
+		key    string
+	}{
+		{"hash", `"hash":"` + testHash + `"`, `"hash":`},
+		{"label", `"label":"1080p"`, `"label":`},
+		{"magnet", `"magnet":"magnet:?xt=urn:btih:` + testHash + `"`, `"magnet":`},
+		{"updated_at", `"updated_at":"2026-07-16T10:11:12Z"`, `"updated_at":`},
+		{"release.type.value", `"value":"TV"`, `"value":`},
+		{"release.name.main", `"main":"Naruto"`, `"main":`},
+		{"release.alias", `"alias":"naruto"`, `"alias":`},
+	}
+	encodings := []struct {
+		name    string
+		literal string
+	}{
+		{"invalid UTF-8", `"bad` + string([]byte{0xff}) + `value"`},
+		{"lone surrogate", `"bad\uD800value"`},
+	}
+	for _, encoding := range encodings {
+		encoding := encoding
+		for _, field := range fields {
+			field := field
+			t.Run(encoding.name+"/"+field.name, func(t *testing.T) {
+				t.Parallel()
+				invalid := strings.Replace(validTorrentJSON(testHash), field.target, field.key+encoding.literal, 1)
+				if invalid == validTorrentJSON(testHash) {
+					t.Fatalf("test did not replace %s", field.name)
+				}
+				server := jsonServer("[" + invalid + "," + validTorrentJSON(testHash) + "]")
+				defer server.Close()
+
+				var logs bytes.Buffer
+				client := newTestClient(t, server.URL+"/", slog.New(slog.NewTextHandler(&logs, nil)))
+				torrents, err := client.TorrentsByRelease(context.Background(), 413)
+				if err != nil {
+					t.Fatalf("TorrentsByRelease: %v", err)
+				}
+				if len(torrents) != 1 {
+					t.Fatalf("torrent count = %d, want valid sibling only", len(torrents))
+				}
+				if !strings.Contains(logs.String(), "field="+field.name) {
+					t.Fatalf("validation log does not identify %s: %s", field.name, logs.String())
+				}
+			})
+		}
+	}
+}
+
+func TestTorrentsByReleaseOmitsMismatchedReleaseAssociation(t *testing.T) {
+	t.Parallel()
+
+	mismatched := strings.Replace(validTorrentJSON(testHash), `"id":413`, `"id":999`, 1)
+	server := jsonServer("[" + mismatched + "," + validTorrentJSON(testHash) + "]")
+	defer server.Close()
+	var logs bytes.Buffer
+	client := newTestClient(t, server.URL+"/", slog.New(slog.NewTextHandler(&logs, nil)))
+	torrents, err := client.TorrentsByRelease(context.Background(), 413)
+	if err != nil {
+		t.Fatalf("TorrentsByRelease: %v", err)
+	}
+	if len(torrents) != 1 || torrents[0].Release.ID != 413 {
+		t.Fatalf("torrents = %+v, want requested release only", torrents)
+	}
+	if logOutput := logs.String(); !strings.Contains(logOutput, "field=release.id") || !strings.Contains(logOutput, "release_id=999") {
+		t.Fatalf("mismatch validation log = %s", logOutput)
+	}
+}
+
+func TestLatestKeepsReleaseAssociationValidationIndependent(t *testing.T) {
+	t.Parallel()
+
+	otherRelease := strings.Replace(validTorrentJSON(testHash), `"id":413`, `"id":999`, 1)
+	server := jsonServer(`{"data":[` + otherRelease + `]}`)
+	defer server.Close()
+	client := newTestClient(t, server.URL+"/", nil)
+	torrents, err := client.Latest(context.Background())
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if len(torrents) != 1 || torrents[0].Release.ID != 999 {
+		t.Fatalf("latest torrents = %+v", torrents)
 	}
 }
 

@@ -234,7 +234,7 @@ func parseHTTPSBaseURL(raw string) (*url.URL, error) {
 	if !parsed.IsAbs() || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.Opaque != "" {
 		return nil, errors.New("must be an absolute HTTPS URL with a host")
 	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.ContainsRune(raw, '#') {
 		return nil, errors.New("must not contain user info, a query, or a fragment")
 	}
 

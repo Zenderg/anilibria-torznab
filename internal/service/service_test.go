@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -60,6 +61,65 @@ func TestExecuteBlankTVSearchIsRejectedWithoutUpstreamIO(t *testing.T) {
 	searches, torrents, latest := client.callSnapshot()
 	if len(searches) != 0 || len(torrents) != 0 || latest != 0 {
 		t.Fatalf("invalid request contacted upstream: search=%v torrents=%v latest=%d", searches, torrents, latest)
+	}
+}
+
+func TestProcessBoundsInvalidTorrentWarnings(t *testing.T) {
+	const invalidItems = 10_000
+	tests := []struct {
+		name          string
+		prepare       func(*anilibria.Torrent)
+		aggregateMark string
+	}{
+		{
+			name: "invalid title",
+			prepare: func(value *anilibria.Torrent) {
+				value.Label = "[1080p]"
+			},
+			aggregateMark: "invalid_title_count=10000",
+		},
+		{
+			name: "peer count overflow",
+			prepare: func(value *anilibria.Torrent) {
+				value.Seeders = math.MaxInt64
+				value.Leechers = 1
+			},
+			aggregateMark: "peer_count_overflow_count=10000",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			torrents := make([]anilibria.Torrent, invalidItems)
+			for index := range torrents {
+				torrents[index] = torrent(anilibria.ReleaseID(index+1), anilibria.ReleaseTypeTV, fmt.Sprintf("%040x", index+1), "Example [01]", testTime(1))
+				test.prepare(&torrents[index])
+			}
+			var logs strings.Builder
+			searchService := newTestService(t, &fakeClient{}, func(config *Config) {
+				config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			})
+			items, err := searchService.process(context.Background(), torrents, allCategories(t), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 0 {
+				t.Fatalf("item count = %d", len(items))
+			}
+			logOutput := logs.String()
+			if warnings := strings.Count(logOutput, "level=WARN"); warnings != processedTorrentLogSampleLimit+1 {
+				t.Fatalf("warning count = %d, want %d", warnings, processedTorrentLogSampleLimit+1)
+			}
+			for _, required := range []string{"invalid_count=10000", "sampled_count=5", "omitted_count=9995", test.aggregateMark} {
+				if !strings.Contains(logOutput, required) {
+					t.Errorf("aggregate log missing %q: %s", required, logOutput)
+				}
+			}
+			for _, forbidden := range []string{"[1080p]", "magnet:"} {
+				if strings.Contains(logOutput, forbidden) {
+					t.Errorf("log disclosed %q: %s", forbidden, logOutput)
+				}
+			}
+		})
 	}
 }
 

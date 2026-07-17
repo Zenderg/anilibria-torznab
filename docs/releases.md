@@ -35,12 +35,19 @@ Separate binary archives are not published for the first release.
 
 - Releases are cut only from `main`.
 - Stable release tags use `vX.Y.Z`, for example `v1.2.3`.
-- The Git tag is the single source of truth for the application version. The
+- The Git tag is the source of commit and application-version intent. The
   release build derives build metadata and the upstream `User-Agent` version
-  from that tag instead of maintaining a second version file.
+  from that tag instead of maintaining a second version file. A tag by itself
+  is not evidence that publication succeeded.
+- A successful non-draft, non-prerelease GitHub Release and its matching public
+  GHCR version tags together identify a published stable release.
 - Pushing a release tag starts the GitHub Actions release workflow.
 - The workflow verifies that the tag has the expected form and identifies a
   commit contained in `main`.
+- A new stable version must be strictly newer than the latest published stable
+  release, and its commit must be a later descendant of that release commit.
+  An idempotent rerun of the already published tag is allowed only when its
+  immutable image still exists and matches the release identity.
 - All required CI and first-release acceptance gates must pass before an image
   is published.
 - The workflow builds the image once and assigns all release tags to that same
@@ -61,6 +68,14 @@ All three tags for a release must initially resolve to the same image-index
 digest. Version tags are immutable: after an image has been published, do not
 move or rebuild that version tag with different contents. A defect found after
 publication is fixed in a new patch release.
+
+Registry lookups fail closed. Only a confirmed manifest-not-found response
+proves that an immutable tag is available; authentication, DNS, rate-limit,
+transport, and unrecognized lookup failures stop the workflow before any tag is
+created. If both immutable tags already exist, the workflow accepts them only
+when they share a digest, contain the required platforms, both platforms carry
+the expected OCI version and revision labels, and the runnable binary reports
+the expected release version and commit.
 
 After the first publication, verify that the GHCR package is public and linked
 to this repository so users can pull it without registry authentication.
@@ -106,12 +121,19 @@ diff and user-visible impact rather than generated blindly from commit subjects.
 3. Review the changes since the previous release:
 
    ```bash
-   git describe --tags --abbrev=0
-   git log --oneline <previous-tag>..HEAD
+   previous_tag=$(gh api repos/Zenderg/anilibria-torznab/releases/latest --jq .tag_name)
+   docker buildx imagetools inspect "ghcr.io/zenderg/anilibria-torznab:${previous_tag}"
+   git fetch origin "refs/tags/${previous_tag}:refs/tags/${previous_tag}"
+   git log --oneline "${previous_tag}..HEAD"
    ```
 
-   For the first release, where no previous tag exists, review the full history
-   ending at the intended release commit.
+   This baseline is the latest successfully published stable GitHub Release,
+   whose matching GHCR image is verified by the second command. Do not use
+   `git describe` for this decision: an annotated tag can remain after a failed
+   workflow even though no image or GitHub Release was published, and that tag
+   must not shorten the review range. For the first release, where the API
+   returns no previous published release, review the full history ending at the
+   intended release commit.
 4. Create and push an annotated tag:
 
    ```bash

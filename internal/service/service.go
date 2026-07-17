@@ -17,6 +17,16 @@ import (
 	"github.com/Zenderg/anilibria-torznab/internal/torznab"
 )
 
+const processedTorrentLogSampleLimit = 5
+
+type processRejectionReason string
+
+const (
+	rejectionUnsupportedReleaseType processRejectionReason = "unsupported_release_type"
+	rejectionInvalidTitle           processRejectionReason = "invalid_title"
+	rejectionPeerCountOverflow      processRejectionReason = "peer_count_overflow"
+)
+
 // Request describes one validated Torznab search operation.
 type Request struct {
 	Query           string
@@ -324,6 +334,8 @@ func (s *Service) loadLatest(ctx context.Context, counters *requestCounters) ([]
 }
 
 func (s *Service) process(ctx context.Context, torrents []anilibria.Torrent, categories torznab.CategoryFilter, season, episode *int) ([]torznab.Item, error) {
+	var rejections processRejections
+	defer rejections.logOmitted(ctx, s.logger)
 	seen := make(map[string]struct{}, len(torrents))
 	items := make([]torznab.Item, 0, len(torrents))
 	for _, torrent := range torrents {
@@ -338,7 +350,7 @@ func (s *Service) process(ctx context.Context, torrents []anilibria.Torrent, cat
 
 		category, ok := torznab.CategoryFor(torznab.ReleaseType(torrent.Release.Type))
 		if !ok {
-			s.logger.Warn("unsupported upstream release type", "release_id", torrent.Release.ID, "release_type", torrent.Release.Type)
+			rejections.drop(ctx, s.logger, rejectionUnsupportedReleaseType, torrent.Release.ID)
 			continue
 		}
 		if !categories.Matches(category) {
@@ -346,14 +358,14 @@ func (s *Service) process(ctx context.Context, torrents []anilibria.Torrent, cat
 		}
 		metadata, err := torznab.ParseTitle(torznab.ReleaseType(torrent.Release.Type), torrent.Release.MainName, torrent.Label)
 		if err != nil {
-			s.logger.Warn("torrent title metadata is invalid", "release_id", torrent.Release.ID)
+			rejections.drop(ctx, s.logger, rejectionInvalidTitle, torrent.Release.ID)
 			continue
 		}
 		if !metadata.Matches(season, episode) {
 			continue
 		}
 		if torrent.Seeders > math.MaxInt64-torrent.Leechers {
-			s.logger.Warn("torrent peer count overflows", "release_id", torrent.Release.ID)
+			rejections.drop(ctx, s.logger, rejectionPeerCountOverflow, torrent.Release.ID)
 			continue
 		}
 		var year *int
@@ -388,6 +400,48 @@ func (s *Service) process(ctx context.Context, torrents []anilibria.Torrent, cat
 		return nil, err
 	}
 	return items, nil
+}
+
+type processRejections struct {
+	total                  int
+	sampled                int
+	unsupportedReleaseType int
+	invalidTitle           int
+	peerCountOverflow      int
+}
+
+func (rejections *processRejections) drop(ctx context.Context, logger *slog.Logger, reason processRejectionReason, releaseID anilibria.ReleaseID) {
+	rejections.total++
+	switch reason {
+	case rejectionUnsupportedReleaseType:
+		rejections.unsupportedReleaseType++
+	case rejectionInvalidTitle:
+		rejections.invalidTitle++
+	case rejectionPeerCountOverflow:
+		rejections.peerCountOverflow++
+	}
+	if rejections.sampled >= processedTorrentLogSampleLimit {
+		return
+	}
+	rejections.sampled++
+	logger.WarnContext(ctx, "dropping invalid torrent during service processing",
+		"release_id", releaseID,
+		"reason", reason,
+	)
+}
+
+func (rejections *processRejections) logOmitted(ctx context.Context, logger *slog.Logger) {
+	if rejections.total <= rejections.sampled {
+		return
+	}
+	logger.WarnContext(ctx, "additional invalid torrents dropped during service processing",
+		"invalid_count", rejections.total,
+		"sampled_count", rejections.sampled,
+		"omitted_count", rejections.total-rejections.sampled,
+		"unsupported_release_type_count", rejections.unsupportedReleaseType,
+		"invalid_title_count", rejections.invalidTitle,
+		"peer_count_overflow_count", rejections.peerCountOverflow,
+	)
 }
 
 func distinctReleaseIDs(input []anilibria.ReleaseID, limit int) []anilibria.ReleaseID {

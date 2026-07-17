@@ -46,6 +46,26 @@ func TestLRUExpiresEntriesAndUsesExactBoundary(t *testing.T) {
 	}
 }
 
+func TestLRUEvictionPrefersExpiredEntryOverLiveLRU(t *testing.T) {
+	now := time.Unix(100, 0)
+	cache := NewLRUWithClock[string, int](2, func() time.Time { return now })
+	cache.Set("live", 1, time.Hour)
+	cache.Set("short", 2, 2*time.Second)
+
+	now = now.Add(2 * time.Second)
+	cache.Set("new", 3, time.Hour)
+
+	if got, ok := cache.Get("live"); !ok || got != 1 {
+		t.Fatalf("Get(live) = %v, %v", got, ok)
+	}
+	if got, ok := cache.Get("new"); !ok || got != 3 {
+		t.Fatalf("Get(new) = %v, %v", got, ok)
+	}
+	if _, ok := cache.Get("short"); ok {
+		t.Fatal("expired short entry remained cached")
+	}
+}
+
 func TestLRUUpdateAndDelete(t *testing.T) {
 	now := time.Unix(100, 0)
 	cache := NewLRUWithClock[string, int](1, func() time.Time { return now })

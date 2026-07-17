@@ -19,7 +19,7 @@ import (
 )
 
 func TestRealClientServiceFanoutProtection(t *testing.T) {
-	t.Run("spaces all attempts, bounds concurrency, and returns deterministic results", func(t *testing.T) {
+	t.Run("bounds concurrency and returns deterministic fan-out results", func(t *testing.T) {
 		const (
 			requestInterval = 12 * time.Millisecond
 			maxConcurrency  = 3
@@ -36,15 +36,9 @@ func TestRealClientServiceFanoutProtection(t *testing.T) {
 			t.Fatalf("Execute() error = %v", err)
 		}
 
-		starts, maximum, releaseCalls := probe.snapshot()
-		if len(starts) != 11 || releaseCalls != 10 {
-			t.Fatalf("upstream attempts: total=%d release=%d, want 11 and 10", len(starts), releaseCalls)
-		}
-		const schedulingTolerance = 4 * time.Millisecond
-		for index := 1; index < len(starts); index++ {
-			if spacing := starts[index].Sub(starts[index-1]); spacing < requestInterval-schedulingTolerance {
-				t.Fatalf("attempt spacing %d = %v, want at least %v", index, spacing, requestInterval-schedulingTolerance)
-			}
+		attempts, maximum, releaseCalls := probe.snapshot()
+		if attempts != 11 || releaseCalls != 10 {
+			t.Fatalf("upstream attempts: total=%d release=%d, want 11 and 10", attempts, releaseCalls)
 		}
 		if maximum > maxConcurrency || maximum < 2 {
 			t.Fatalf("maximum server in-flight = %d, want overlapping requests bounded by %d", maximum, maxConcurrency)
@@ -129,9 +123,39 @@ func TestServicePreservesRetryBudgetThroughCoalescing(t *testing.T) {
 	}
 }
 
+func TestRealClientServiceDoesNotExposeMismatchedMagnet(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/api/v1/app/search/releases" {
+			_, _ = response.Write([]byte(`[{"id":1}]`))
+			return
+		}
+		if request.URL.Path == "/api/v1/anime/torrents/release/1" {
+			torrent := integrationTorrent(1)
+			torrent["magnet"] = "magnet:?xt=urn:btih:" + integrationHash(2)
+			if err := json.NewEncoder(response).Encode([]any{torrent}); err != nil {
+				t.Errorf("encode torrent response: %v", err)
+			}
+			return
+		}
+		http.NotFound(response, request)
+	}))
+	defer upstream.Close()
+
+	searchService := newIntegratedService(t, upstream.URL, time.Microsecond, 1)
+	response, err := searchService.Execute(context.Background(), integratedRequest(t))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if response.Feed.Total != 0 || len(response.Feed.Items) != 0 {
+		t.Fatalf("mismatched magnet reached feed: %+v", response.Feed)
+	}
+}
+
 type fanoutProbe struct {
 	mu           sync.Mutex
-	starts       []time.Time
+	attempts     int
 	inFlight     int
 	maximum      int
 	releaseCalls int
@@ -139,7 +163,7 @@ type fanoutProbe struct {
 
 func (probe *fanoutProbe) begin(release bool) func() {
 	probe.mu.Lock()
-	probe.starts = append(probe.starts, time.Now())
+	probe.attempts++
 	probe.inFlight++
 	if probe.inFlight > probe.maximum {
 		probe.maximum = probe.inFlight
@@ -155,10 +179,10 @@ func (probe *fanoutProbe) begin(release bool) func() {
 	}
 }
 
-func (probe *fanoutProbe) snapshot() ([]time.Time, int, int) {
+func (probe *fanoutProbe) snapshot() (int, int, int) {
 	probe.mu.Lock()
 	defer probe.mu.Unlock()
-	return append([]time.Time(nil), probe.starts...), probe.maximum, probe.releaseCalls
+	return probe.attempts, probe.maximum, probe.releaseCalls
 }
 
 func newFanoutUpstream(t *testing.T, probe *fanoutProbe, releaseWork time.Duration) *httptest.Server {

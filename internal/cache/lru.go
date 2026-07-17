@@ -4,6 +4,7 @@
 package cache
 
 import (
+	"container/heap"
 	"container/list"
 	"sync"
 	"time"
@@ -18,12 +19,47 @@ type LRU[K comparable, V any] struct {
 	now        func() time.Time
 	entries    map[K]*list.Element
 	recency    list.List
+	expiry     expiryHeap[K, V]
 }
 
 type entry[K comparable, V any] struct {
 	key       K
 	value     V
 	expiresAt time.Time
+	element   *list.Element
+	heapIndex int
+}
+
+type expiryHeap[K comparable, V any] []*entry[K, V]
+
+func (items expiryHeap[K, V]) Len() int {
+	return len(items)
+}
+
+func (items expiryHeap[K, V]) Less(first, second int) bool {
+	return items[first].expiresAt.Before(items[second].expiresAt)
+}
+
+func (items expiryHeap[K, V]) Swap(first, second int) {
+	items[first], items[second] = items[second], items[first]
+	items[first].heapIndex = first
+	items[second].heapIndex = second
+}
+
+func (items *expiryHeap[K, V]) Push(value any) {
+	item := value.(*entry[K, V])
+	item.heapIndex = len(*items)
+	*items = append(*items, item)
+}
+
+func (items *expiryHeap[K, V]) Pop() any {
+	old := *items
+	last := len(old) - 1
+	item := old[last]
+	old[last] = nil
+	item.heapIndex = -1
+	*items = old[:last]
+	return item
 }
 
 // NewLRU creates a cache with the given capacity. It uses the system clock by
@@ -91,19 +127,27 @@ func (cache *LRU[K, V]) Set(key K, value V, ttl time.Duration) {
 		return
 	}
 
-	expiresAt := cache.now().Add(ttl)
+	now := cache.now()
+	expiresAt := now.Add(ttl)
 	if element, ok := cache.entries[key]; ok {
 		item := element.Value.(*entry[K, V])
 		item.value = value
 		item.expiresAt = expiresAt
+		heap.Fix(&cache.expiry, item.heapIndex)
 		cache.recency.MoveToFront(element)
 		return
 	}
 
-	element := cache.recency.PushFront(&entry[K, V]{key: key, value: value, expiresAt: expiresAt})
+	item := &entry[K, V]{key: key, value: value, expiresAt: expiresAt}
+	element := cache.recency.PushFront(item)
+	item.element = element
 	cache.entries[key] = element
+	heap.Push(&cache.expiry, item)
 	if cache.recency.Len() > cache.maxEntries {
-		cache.remove(cache.recency.Back())
+		cache.removeExpired(now)
+		if cache.recency.Len() > cache.maxEntries {
+			cache.remove(cache.recency.Back())
+		}
 	}
 }
 
@@ -121,14 +165,7 @@ func (cache *LRU[K, V]) Len() int {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	now := cache.now()
-	for element := cache.recency.Back(); element != nil; {
-		previous := element.Prev()
-		if !now.Before(element.Value.(*entry[K, V]).expiresAt) {
-			cache.remove(element)
-		}
-		element = previous
-	}
+	cache.removeExpired(cache.now())
 	return cache.recency.Len()
 }
 
@@ -136,6 +173,13 @@ func (cache *LRU[K, V]) remove(element *list.Element) {
 	item := element.Value.(*entry[K, V])
 	delete(cache.entries, item.key)
 	cache.recency.Remove(element)
+	heap.Remove(&cache.expiry, item.heapIndex)
+}
+
+func (cache *LRU[K, V]) removeExpired(now time.Time) {
+	for len(cache.expiry) > 0 && !now.Before(cache.expiry[0].expiresAt) {
+		cache.remove(cache.expiry[0].element)
+	}
 }
 
 // TTLForResult selects negativeTTL for a successful empty result and

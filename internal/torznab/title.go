@@ -133,6 +133,9 @@ func parseSeason(semantic string) *int {
 		if !completeToken(semantic, index[0], index[1]) {
 			continue
 		}
+		if seasonNumericContinuationAfter(semantic[index[1]:]) {
+			return nil
+		}
 		digits := seasonDigits.FindString(semantic[index[0]:index[1]])
 		value, valid := boundedPositiveInteger(digits, maxSeason)
 		if valid {

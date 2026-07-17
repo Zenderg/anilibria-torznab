@@ -157,6 +157,10 @@ func TestParseTitleSeasonAndEpisodeSafeguards(t *testing.T) {
 		{"Title IIII [10000]", 1, nil},
 		{"Title Season 0 II [0]", 1, nil},
 		{"Title S1000 [12-1]", 1, nil},
+		{"Title Season 2.5 [1]", 1, &EpisodeRange{1, 1}},
+		{"Title S02.5 [1]", 1, &EpisodeRange{1, 1}},
+		{"Title Season 2-3 [1]", 1, &EpisodeRange{1, 1}},
+		{"Title Series 2/3 [1]", 1, &EpisodeRange{1, 1}},
 	}
 	for _, test := range tests {
 		metadata, err := ParseTitle(ReleaseTV, "RU", test.label)

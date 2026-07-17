@@ -64,6 +64,7 @@ type rawTorrent struct {
 	CompletedTimes json.Number `json:"completed_times"`
 	UpdatedAt      string      `json:"updated_at"`
 	Release        rawRelease  `json:"release"`
+	invalidString  string
 }
 
 type rawRelease struct {
@@ -82,7 +83,21 @@ type rawName struct {
 	Main string `json:"main"`
 }
 
+func (raw *rawTorrent) UnmarshalJSON(data []byte) error {
+	type torrentWithoutMethods rawTorrent
+	var decoded torrentWithoutMethods
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*raw = rawTorrent(decoded)
+	raw.invalidString = invalidTorrentStringField(data)
+	return nil
+}
+
 func validateTorrent(raw rawTorrent) (Torrent, string, error) {
+	if raw.invalidString != "" {
+		return Torrent{}, raw.invalidString, fmt.Errorf("invalid source string encoding")
+	}
 	hash, err := normalizeInfoHash(raw.Hash)
 	if err != nil {
 		return Torrent{}, "hash", err
@@ -122,7 +137,7 @@ func validateTorrent(raw rawTorrent) (Torrent, string, error) {
 		return Torrent{}, "updated_at", fmt.Errorf("invalid RFC 3339 timestamp")
 	}
 	magnet, err := url.Parse(raw.Magnet)
-	if err != nil || !strings.EqualFold(magnet.Scheme, "magnet") {
+	if err != nil || !strings.EqualFold(magnet.Scheme, "magnet") || !magnetContainsInfoHash(magnet, hash) {
 		return Torrent{}, "magnet", fmt.Errorf("invalid magnet URI")
 	}
 
@@ -158,6 +173,130 @@ func validateTorrent(raw rawTorrent) (Torrent, string, error) {
 			Alias:    raw.Release.Alias,
 		},
 	}, "", nil
+}
+
+func magnetContainsInfoHash(magnet *url.URL, hash string) bool {
+	query, err := url.ParseQuery(magnet.RawQuery)
+	if err != nil {
+		return false
+	}
+	const prefix = "urn:btih:"
+	for _, exactTopic := range query["xt"] {
+		if len(exactTopic) != len(prefix)+40 || !strings.EqualFold(exactTopic[:len(prefix)], prefix) {
+			continue
+		}
+		candidate, err := normalizeInfoHash(exactTopic[len(prefix):])
+		if err == nil && candidate == hash {
+			return true
+		}
+	}
+	return false
+}
+
+func invalidTorrentStringField(data []byte) string {
+	var fields struct {
+		Hash      json.RawMessage `json:"hash"`
+		Label     json.RawMessage `json:"label"`
+		Magnet    json.RawMessage `json:"magnet"`
+		UpdatedAt json.RawMessage `json:"updated_at"`
+		Release   struct {
+			Type struct {
+				Value json.RawMessage `json:"value"`
+			} `json:"type"`
+			Name struct {
+				Main json.RawMessage `json:"main"`
+			} `json:"name"`
+			Alias json.RawMessage `json:"alias"`
+		} `json:"release"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return ""
+	}
+	strings := []struct {
+		name string
+		raw  json.RawMessage
+	}{
+		{"hash", fields.Hash},
+		{"label", fields.Label},
+		{"magnet", fields.Magnet},
+		{"updated_at", fields.UpdatedAt},
+		{"release.type.value", fields.Release.Type.Value},
+		{"release.name.main", fields.Release.Name.Main},
+		{"release.alias", fields.Release.Alias},
+	}
+	for _, field := range strings {
+		if len(field.raw) > 0 && field.raw[0] == '"' && !validJSONStringEncoding(field.raw) {
+			return field.name
+		}
+	}
+	return ""
+}
+
+func validJSONStringEncoding(value []byte) bool {
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return true
+	}
+	for index := 1; index < len(value)-1; {
+		if value[index] == '\\' {
+			if index+1 >= len(value)-1 {
+				return false
+			}
+			if value[index+1] != 'u' {
+				index += 2
+				continue
+			}
+			code, ok := jsonHexQuad(value, index+2)
+			if !ok {
+				return false
+			}
+			index += 6
+			switch {
+			case code >= 0xd800 && code <= 0xdbff:
+				if index+6 > len(value)-1 || value[index] != '\\' || value[index+1] != 'u' {
+					return false
+				}
+				low, ok := jsonHexQuad(value, index+2)
+				if !ok || low < 0xdc00 || low > 0xdfff {
+					return false
+				}
+				index += 6
+			case code >= 0xdc00 && code <= 0xdfff:
+				return false
+			}
+			continue
+		}
+		if value[index] < utf8.RuneSelf {
+			index++
+			continue
+		}
+		runeValue, size := utf8.DecodeRune(value[index : len(value)-1])
+		if runeValue == utf8.RuneError && size == 1 {
+			return false
+		}
+		index += size
+	}
+	return true
+}
+
+func jsonHexQuad(value []byte, start int) (uint16, bool) {
+	if start+4 > len(value) {
+		return 0, false
+	}
+	var result uint16
+	for _, digit := range value[start : start+4] {
+		result <<= 4
+		switch {
+		case digit >= '0' && digit <= '9':
+			result += uint16(digit - '0')
+		case digit >= 'a' && digit <= 'f':
+			result += uint16(digit-'a') + 10
+		case digit >= 'A' && digit <= 'F':
+			result += uint16(digit-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return result, true
 }
 
 func (releaseType ReleaseType) valid() bool {

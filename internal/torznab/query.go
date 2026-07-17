@@ -177,6 +177,14 @@ func unsupportedNumericContinuation(value string, start, end int) bool {
 }
 
 func numericContinuationAfter(value string) bool {
+	return hasNumericContinuationAfter(value, true)
+}
+
+func seasonNumericContinuationAfter(value string) bool {
+	return hasNumericContinuationAfter(value, false)
+}
+
+func hasNumericContinuationAfter(value string, allowSeparatedTitleNumber bool) bool {
 	index := skipSpaceForward(value, 0)
 	spacedBeforeSeparator := index > 0
 	separator, width := firstRune(value[index:])
@@ -193,7 +201,8 @@ func numericContinuationAfter(value string) bool {
 	if index == digitStart {
 		return false
 	}
-	if index-digitStart == 4 && spacedBeforeSeparator && spacedAfterSeparator {
+	if spacedBeforeSeparator && spacedAfterSeparator &&
+		(allowSeparatedTitleNumber || index-digitStart == 4) {
 		return false
 	}
 	if index == len(value) {
@@ -219,7 +228,7 @@ func numericContinuationBefore(value string) bool {
 	if index == digitEnd {
 		return false
 	}
-	if digitEnd-index == 4 && spacedBeforeSeparator && spacedAfterSeparator {
+	if spacedBeforeSeparator && spacedAfterSeparator {
 		return false
 	}
 	if index == 0 {
@@ -312,7 +321,10 @@ func markTechnicalEdgeSeparators(value string, remove, technical []bool) {
 		index += width
 	}
 	if sawTechnical {
-		for _, separator := range leadingSeparators {
+		for index, separator := range leadingSeparators {
+			if index == len(leadingSeparators)-1 && leadingSeparatorBelongsToTitle(value, separator) {
+				continue
+			}
 			markBytes(remove, separator[0], separator[1])
 		}
 	}
@@ -337,10 +349,31 @@ func markTechnicalEdgeSeparators(value string, remove, technical []bool) {
 		index -= width
 	}
 	if sawTechnical {
-		for _, separator := range trailingSeparators {
+		for index, separator := range trailingSeparators {
+			if index == len(trailingSeparators)-1 && trailingSeparatorBelongsToTitle(value, separator) {
+				continue
+			}
 			markBytes(remove, separator[0], separator[1])
 		}
 	}
+}
+
+func leadingSeparatorBelongsToTitle(value string, separator [2]int) bool {
+	if separator[0] == 0 || separator[1] == len(value) {
+		return false
+	}
+	previous, _ := lastRune(value[:separator[0]])
+	next, _ := firstRune(value[separator[1]:])
+	return unicode.IsSpace(previous) && !unicode.IsSpace(next)
+}
+
+func trailingSeparatorBelongsToTitle(value string, separator [2]int) bool {
+	if separator[0] == 0 || separator[1] == len(value) {
+		return false
+	}
+	previous, _ := lastRune(value[:separator[0]])
+	next, _ := firstRune(value[separator[1]:])
+	return !unicode.IsSpace(previous) && unicode.IsSpace(next)
 }
 
 func markBytes(marked []bool, start, end int) bool {

@@ -109,6 +109,8 @@ func TestLoadFromRejectsInvalidConfiguration(t *testing.T) {
 		{name: "HTTP upstream", values: map[string]string{"API_KEY": "x", "ANILIBRIA_API_BASE_URL": "http://example.test/"}, wantVar: "ANILIBRIA_API_BASE_URL"},
 		{name: "URL user info", values: map[string]string{"API_KEY": "x", "ANILIBRIA_SITE_BASE_URL": "https://user:pass@example.test/"}, wantVar: "ANILIBRIA_SITE_BASE_URL"},
 		{name: "URL query", values: map[string]string{"API_KEY": "x", "ANILIBRIA_SITE_BASE_URL": "https://example.test/?x=1"}, wantVar: "ANILIBRIA_SITE_BASE_URL"},
+		{name: "API URL empty fragment", values: map[string]string{"API_KEY": "x", "ANILIBRIA_API_BASE_URL": "https://api.example.test/#"}, wantVar: "ANILIBRIA_API_BASE_URL"},
+		{name: "site URL empty fragment", values: map[string]string{"API_KEY": "x", "ANILIBRIA_SITE_BASE_URL": "https://site.example.test/#"}, wantVar: "ANILIBRIA_SITE_BASE_URL"},
 		{name: "short HTTP timeout", values: map[string]string{"API_KEY": "x", "HTTP_TIMEOUT": "99ms"}, wantVar: "HTTP_TIMEOUT"},
 		{name: "request shorter than HTTP", values: map[string]string{"API_KEY": "x", "REQUEST_TIMEOUT": "1s", "HTTP_TIMEOUT": "2s"}, wantVar: "REQUEST_TIMEOUT"},
 		{name: "bad interval", values: map[string]string{"API_KEY": "x", "REQUEST_INTERVAL": "0s"}, wantVar: "REQUEST_INTERVAL"},
