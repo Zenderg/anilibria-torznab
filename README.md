@@ -6,6 +6,11 @@ a Generic Torznab indexer in Prowlarr and Sonarr.
 This is an unofficial community project and is not affiliated with AniLiberty,
 Prowlarr, Sonarr, or their maintainers.
 
+Native AniLibria support for Prowlarr is being developed upstream in
+[Prowlarr PR #2730](https://github.com/Prowlarr/Prowlarr/pull/2730). Until it is
+merged and included in a Prowlarr release, this bridge remains the documented
+integration path.
+
 The current stable release is `v1.0.3`. Its deployment artifact is the public
 multi-platform image:
 
