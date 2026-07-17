@@ -23,6 +23,11 @@ func TestNormalizeQueryNormativeExamples(t *testing.T) {
 		{"part retained", "Title\u2003Part   2", nil, nil, "Title Part 2", nil, nil, false},
 		{"x notation", "2x03 - Title", nil, nil, "Title", intPointer(2), intPointer(3), true},
 		{"separate tokens", "Title S02 E03", nil, nil, "Title", intPointer(2), intPointer(3), true},
+		{"next-line whitespace", "Title Season\u00852", nil, nil, "Title", intPointer(2), nil, true},
+		{"meaningful leading punctuation", ".hack//SIGN S01", nil, nil, ".hack//SIGN", intPointer(1), nil, true},
+		{"pre-existing empty pair", "Title () S02", nil, nil, "Title ()", intPointer(2), nil, true},
+		{"pair emptied by token", "Title (S02)", nil, nil, "Title", intPointer(2), nil, true},
+		{"year and internal separator retained", "Title S02E03 - 2026", nil, nil, "Title - 2026", intPointer(2), intPointer(3), true},
 		{"empty after cleanup", "S02E03", nil, nil, "", intPointer(2), intPointer(3), true},
 		{"embedded text retained", "MyS02 ShowE03", nil, nil, "MyS02 ShowE03", nil, nil, false},
 	}
@@ -56,6 +61,12 @@ func TestNormalizeQueryRejectsMalformedAndConflictingValues(t *testing.T) {
 		{"Title S02E03", stringPointer("2"), stringPointer("4"), ParameterEpisode},
 		{"Title S000", nil, nil, ParameterQuery},
 		{"Title S1000", nil, nil, ParameterQuery},
+		{"Title S02E03.5", nil, nil, ParameterQuery},
+		{"Title S02E03-04", nil, nil, ParameterQuery},
+		{"Title Episode 1-2", nil, nil, ParameterQuery},
+		{"Title Season 2.5", nil, nil, ParameterQuery},
+		{"Title S02.5E03", nil, nil, ParameterQuery},
+		{"Title 2.5x03", nil, nil, ParameterQuery},
 	}
 	for _, test := range tests {
 		_, err := NormalizeQuery(test.query, test.season, test.episode)

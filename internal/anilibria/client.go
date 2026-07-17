@@ -57,6 +57,7 @@ type Client struct {
 	gate             chan struct{}
 	limiter          intervalLimiter
 	randomFloat      func() float64
+	attemptStarted   func(time.Time)
 }
 
 type intervalLimiter struct {
@@ -97,7 +98,12 @@ func NewClient(config Config) (*Client, error) {
 			return nil, fmt.Errorf("invalid application version")
 		}
 	}
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/"
+	if baseURL.RawPath != "" {
+		baseURL.RawPath = strings.TrimRight(baseURL.EscapedPath(), "/") + "/"
+		baseURL.Path, _ = url.PathUnescape(baseURL.RawPath)
+	} else {
+		baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/"
+	}
 
 	httpClient := config.HTTPClient
 	if httpClient == nil {
@@ -137,13 +143,13 @@ func (client *Client) SearchReleases(ctx context.Context, query string) ([]Relea
 		"include": {"id"},
 	})
 	var ids []ReleaseID
-	if err := client.getJSON(ctx, "search_releases", requestURL, func(body []byte) error {
+	if err := client.getJSON(ctx, "search_releases", requestURL, func(ctx context.Context, body []byte) error {
 		trimmed := bytes.TrimSpace(body)
 		if len(trimmed) == 0 || trimmed[0] != '[' {
 			return fmt.Errorf("release search response is not an array")
 		}
 		var raw []rawReleaseID
-		if err := decodeJSON(trimmed, &raw); err != nil {
+		if err := decodeJSON(ctx, trimmed, &raw); err != nil {
 			return err
 		}
 		ids = make([]ReleaseID, len(raw))
@@ -174,9 +180,9 @@ func (client *Client) TorrentsByRelease(ctx context.Context, releaseID ReleaseID
 		"include": {torrentInclude},
 	})
 	var torrents []Torrent
-	if err := client.getJSON(ctx, "torrents_by_release", requestURL, func(body []byte) error {
+	if err := client.getJSON(ctx, "torrents_by_release", requestURL, func(ctx context.Context, body []byte) error {
 		var raw []rawTorrent
-		if err := decodeTorrentCollection(body, &raw); err != nil {
+		if err := decodeTorrentCollection(ctx, body, &raw); err != nil {
 			return err
 		}
 		var err error
@@ -195,11 +201,11 @@ func (client *Client) Latest(ctx context.Context) ([]Torrent, error) {
 		"include": {torrentInclude},
 	})
 	var torrents []Torrent
-	if err := client.getJSON(ctx, "latest", requestURL, func(body []byte) error {
+	if err := client.getJSON(ctx, "latest", requestURL, func(ctx context.Context, body []byte) error {
 		var envelope struct {
 			Data json.RawMessage `json:"data"`
 		}
-		if err := decodeJSON(body, &envelope); err != nil {
+		if err := decodeJSON(ctx, body, &envelope); err != nil {
 			return err
 		}
 		trimmed := bytes.TrimSpace(envelope.Data)
@@ -207,7 +213,7 @@ func (client *Client) Latest(ctx context.Context) ([]Torrent, error) {
 			return fmt.Errorf("latest data is not an array")
 		}
 		var raw []rawTorrent
-		if err := decodeJSON(trimmed, &raw); err != nil {
+		if err := decodeJSON(ctx, trimmed, &raw); err != nil {
 			return err
 		}
 		var err error
@@ -239,15 +245,19 @@ func (client *Client) validTorrents(ctx context.Context, operation string, raw [
 	return torrents, nil
 }
 
-func (client *Client) getJSON(ctx context.Context, operation, requestURL string, decode func([]byte) error) error {
+func (client *Client) getJSON(ctx context.Context, operation, requestURL string, decode func(context.Context, []byte) error) error {
 	started := time.Now()
 	for attempt := 1; attempt <= maximumAttempts; attempt++ {
 		if err := client.acquire(ctx); err != nil {
 			return newError(ErrorClassCanceled, operation, 0, attempt-1, started, err)
 		}
-		if err := client.limiter.wait(ctx); err != nil {
+		attemptStarted, err := client.limiter.wait(ctx)
+		if err != nil {
 			client.release()
 			return newError(ErrorClassCanceled, operation, 0, attempt-1, started, err)
+		}
+		if client.attemptStarted != nil {
+			client.attemptStarted(attemptStarted)
 		}
 
 		status, retryAfter, body, err := client.attempt(ctx, requestURL)
@@ -267,7 +277,7 @@ func (client *Client) getJSON(ctx context.Context, operation, requestURL string,
 			return newError(ErrorClassCanceled, operation, status, attempt, started, err)
 		}
 		if status >= 200 && status <= 299 {
-			decodeErr := decode(body)
+			decodeErr := decode(ctx, body)
 			if err := ctx.Err(); err != nil {
 				return newError(ErrorClassCanceled, operation, status, attempt, started, err)
 			}
@@ -354,22 +364,22 @@ func (client *Client) release() {
 	<-client.gate
 }
 
-func (limiter *intervalLimiter) wait(ctx context.Context) error {
+func (limiter *intervalLimiter) wait(ctx context.Context) (time.Time, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return time.Time{}, err
 		}
 		limiter.mu.Lock()
 		now := time.Now()
 		if !now.Before(limiter.next) {
 			limiter.next = now.Add(limiter.interval)
 			limiter.mu.Unlock()
-			return nil
+			return now, nil
 		}
 		delay := time.Until(limiter.next)
 		limiter.mu.Unlock()
 		if err := waitContext(ctx, delay); err != nil {
-			return err
+			return time.Time{}, err
 		}
 	}
 }
@@ -385,12 +395,18 @@ func (client *Client) backoff(attempt int) time.Duration {
 
 func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 	value = strings.TrimSpace(value)
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0, true
+		}
 		const maximumDuration = time.Duration(1<<63 - 1)
 		if seconds > int64(maximumDuration/time.Second) {
 			return maximumDuration, true
 		}
 		return time.Duration(seconds) * time.Second, true
+	}
+	if negativeDecimal(value) {
+		return 0, true
 	}
 	date, err := http.ParseTime(value)
 	if err != nil {
@@ -401,6 +417,18 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 		delay = 0
 	}
 	return delay, true
+}
+
+func negativeDecimal(value string) bool {
+	if len(value) < 2 || value[0] != '-' {
+		return false
+	}
+	for index := 1; index < len(value); index++ {
+		if value[index] < '0' || value[index] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {
@@ -443,17 +471,17 @@ func classifyStatus(status int) (ErrorClass, bool) {
 	}
 }
 
-func decodeTorrentCollection(body []byte, destination *[]rawTorrent) error {
+func decodeTorrentCollection(ctx context.Context, body []byte, destination *[]rawTorrent) error {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		return fmt.Errorf("empty JSON response")
 	}
 	switch trimmed[0] {
 	case '[':
-		return decodeJSON(trimmed, destination)
+		return decodeJSON(ctx, trimmed, destination)
 	case '{':
 		var singleton rawTorrent
-		if err := decodeJSON(trimmed, &singleton); err != nil {
+		if err := decodeJSON(ctx, trimmed, &singleton); err != nil {
 			return err
 		}
 		*destination = []rawTorrent{singleton}
@@ -463,8 +491,8 @@ func decodeTorrentCollection(body []byte, destination *[]rawTorrent) error {
 	}
 }
 
-func decodeJSON(body []byte, destination any) error {
-	decoder := json.NewDecoder(bytes.NewReader(body))
+func decodeJSON(ctx context.Context, body []byte, destination any) error {
+	decoder := json.NewDecoder(contextReader{ctx: ctx, reader: bytes.NewReader(body)})
 	decoder.UseNumber()
 	if err := decoder.Decode(destination); err != nil {
 		return err
@@ -477,6 +505,22 @@ func decodeJSON(body []byte, destination any) error {
 		return err
 	}
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader contextReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	const maximumChunk = 32 << 10
+	if len(buffer) > maximumChunk {
+		buffer = buffer[:maximumChunk]
+	}
+	return reader.reader.Read(buffer)
 }
 
 func (client *Client) responseError(operation string, cause error) *Error {

@@ -73,6 +73,23 @@ func TestLoadFromParsesOverridesAndNormalizesURLs(t *testing.T) {
 	}
 }
 
+func TestLoadFromPreservesEncodedSlashesInURLPrefixes(t *testing.T) {
+	cfg, err := LoadFrom(environment(map[string]string{
+		"API_KEY":                 "secret",
+		"ANILIBRIA_API_BASE_URL":  "https://api.example.test/proxy%2Ftenant/api/v1///",
+		"ANILIBRIA_SITE_BASE_URL": "https://site.example.test/proxy%2Ftenant///",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.APIBaseURL.String(); got != "https://api.example.test/proxy%2Ftenant/api/v1/" {
+		t.Errorf("APIBaseURL = %q", got)
+	}
+	if got := cfg.SiteBaseURL.String(); got != "https://site.example.test/proxy%2Ftenant/" {
+		t.Errorf("SiteBaseURL = %q", got)
+	}
+}
+
 func TestLoadFromRejectsInvalidConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -80,6 +97,7 @@ func TestLoadFromRejectsInvalidConfiguration(t *testing.T) {
 		wantVar string
 	}{
 		{name: "missing API key", values: map[string]string{}, wantVar: "API_KEY"},
+		{name: "non-UTF-8 API key", values: map[string]string{"API_KEY": string([]byte{0xff})}, wantVar: "API_KEY"},
 		{name: "empty listen address", values: map[string]string{"API_KEY": "x", "LISTEN_ADDR": " \t"}, wantVar: "LISTEN_ADDR"},
 		{name: "HTTP upstream", values: map[string]string{"API_KEY": "x", "ANILIBRIA_API_BASE_URL": "http://example.test/"}, wantVar: "ANILIBRIA_API_BASE_URL"},
 		{name: "URL user info", values: map[string]string{"API_KEY": "x", "ANILIBRIA_SITE_BASE_URL": "https://user:pass@example.test/"}, wantVar: "ANILIBRIA_SITE_BASE_URL"},

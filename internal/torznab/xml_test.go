@@ -100,6 +100,38 @@ func TestRenderRSSExactMapping(t *testing.T) {
 	}
 }
 
+func TestRenderRSSPreservesEncodedSlashInSitePrefix(t *testing.T) {
+	t.Parallel()
+	document, err := RenderRSS(Feed{
+		SiteBaseURL: "https://example.test/proxy%2Ftenant/",
+		Total:       1,
+		Items: []Item{{
+			Title:          "valid",
+			InfoHash:       "abcdef0123456789abcdef0123456789abcdef01",
+			MagnetURI:      "magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+			ReleaseAlias:   "release",
+			UpdatedAt:      time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC),
+			Category:       CategoryAnime,
+			SizeBytes:      1,
+			Seeders:        1,
+			Leechers:       1,
+			CompletedTimes: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(document)
+	for _, expected := range []string{
+		"<link>https://example.test/proxy%2Ftenant/</link>",
+		"<comments>https://example.test/proxy%2Ftenant/anime/releases/release/release</comments>",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("RSS missing %q:\n%s", expected, text)
+		}
+	}
+}
+
 func TestRenderRSSFiltersXMLUnsafeAndOverflowItems(t *testing.T) {
 	t.Parallel()
 	valid := Item{

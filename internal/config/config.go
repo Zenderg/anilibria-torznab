@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -78,8 +79,8 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	}
 
 	cfg.APIKey, _ = getenv("API_KEY")
-	if len(cfg.APIKey) < 1 || len(cfg.APIKey) > 1024 {
-		return Config{}, invalid("API_KEY", "must contain 1..1024 bytes")
+	if len(cfg.APIKey) < 1 || len(cfg.APIKey) > 1024 || !utf8.ValidString(cfg.APIKey) {
+		return Config{}, invalid("API_KEY", "must contain 1..1024 bytes of valid UTF-8")
 	}
 
 	cfg.APIBaseURL, err = parseHTTPSBaseURL(optionalString(getenv, "ANILIBRIA_API_BASE_URL", defaultAPIBaseURL))
@@ -221,8 +222,12 @@ func parseHTTPSBaseURL(raw string) (*url.URL, error) {
 		return nil, errors.New("must not contain user info, a query, or a fragment")
 	}
 
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/"
-	parsed.RawPath = ""
+	if parsed.RawPath != "" {
+		parsed.RawPath = strings.TrimRight(parsed.EscapedPath(), "/") + "/"
+		parsed.Path, _ = url.PathUnescape(parsed.RawPath)
+	} else {
+		parsed.Path = strings.TrimRight(parsed.Path, "/") + "/"
+	}
 	return parsed, nil
 }
 

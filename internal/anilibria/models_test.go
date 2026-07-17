@@ -1,6 +1,7 @@
 package anilibria
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -65,7 +66,7 @@ func TestValidateTorrentAcceptsEveryDeclaredReleaseTypeAndOptionalYear(t *testin
 		ReleaseTypeOAD, ReleaseTypeMovie, ReleaseTypeDorama, ReleaseTypeSpecial,
 	}
 	var fixtures []rawTorrent
-	if err := decodeJSON([]byte(fixtureString(t, "torrents_release_types.json")), &fixtures); err != nil {
+	if err := decodeJSON(context.Background(), []byte(fixtureString(t, "torrents_release_types.json")), &fixtures); err != nil {
 		t.Fatalf("decode release-type fixture: %v", err)
 	}
 	if len(fixtures) != len(expectedTypes) {

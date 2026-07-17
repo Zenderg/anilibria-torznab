@@ -68,8 +68,10 @@ These checks establish compatibility at a point in time, not an availability
 guarantee. Repeat them through the opt-in smoke test when revalidating.
 
 Base URL joining must preserve a path prefix and produce exactly one slash
-between the configured root and endpoint. Only `https` upstream roots are valid
-unless an explicit development/test mode is introduced later.
+between the configured root and endpoint. Trailing-slash normalization preserves
+valid percent-encoded reserved path characters such as `%2F`; it must not turn
+them into route separators. Only `https` upstream roots are valid unless an
+explicit development/test mode is introduced later.
 
 ## Client identity
 
@@ -262,7 +264,9 @@ negative or already-expired values do not add delay. Malformed values are
 ignored in favor of local backoff and are not logged verbatim.
 
 The response body is read through a hard decompressed-byte limit before JSON
-decoding. The configured HTTP timeout applies to each attempt, while the parent
+decoding. Decoding from that in-memory body continues to check the parent request
+context, including before the first value and while checking for a trailing
+value. The configured HTTP timeout applies to each attempt, while the parent
 request context may cancel sooner.
 
 ## Fixture policy

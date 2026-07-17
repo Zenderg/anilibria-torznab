@@ -180,11 +180,12 @@ documented binary suffixes `KiB`, `MiB`, and `GiB`.
 
 Validation is explicit; zero never means "disable":
 
-- `API_KEY` is compared exactly as supplied and must contain 1..1024 bytes.
+- `API_KEY` is compared exactly as supplied and must contain 1..1024 bytes of
+  valid UTF-8. Invalid keys fail startup without being included in the error.
 - `LISTEN_ADDR` must be non-empty and must successfully bind during startup.
 - Both base URLs must be absolute `https` URLs with a host and no user info,
   query, or fragment. Their path prefix is allowed and normalized to one trailing
-  slash.
+  slash without decoding valid reserved escapes such as `%2F`.
 - `HTTP_TIMEOUT` must be between `100ms` and `2m`.
 - `REQUEST_TIMEOUT` must be between `1s` and `10m` and not shorter than
   `HTTP_TIMEOUT`.

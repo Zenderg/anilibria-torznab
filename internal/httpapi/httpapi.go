@@ -47,7 +47,7 @@ type API struct {
 
 // New validates dependencies and initializes request-ID generation.
 func New(cfg Config) (*API, error) {
-	if cfg.APIKey == "" || cfg.RequestTimeout <= 0 || cfg.Executor == nil {
+	if cfg.APIKey == "" || !utf8.ValidString(cfg.APIKey) || cfg.RequestTimeout <= 0 || cfg.Executor == nil {
 		return nil, errors.New("invalid HTTP API configuration")
 	}
 	if cfg.Logger == nil {
@@ -101,8 +101,8 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 	values, parseErr := url.ParseQuery(r.URL.RawQuery)
 	canonical := canonicalValues(values)
-	keys := canonical["apikey"]
-	if len(keys) != 1 || !a.authenticated(keys[0]) {
+	key, validKey := rawAPIKey(r.URL.RawQuery)
+	if !validKey || !a.authenticated(key) {
 		a.completeProtocolError(w, torznab.ErrorIncorrectCredentials, torznab.ParameterAPIKey, requestID, "unknown", "authentication_failed", started, service.Stats{})
 		return
 	}
@@ -349,6 +349,27 @@ func canonicalValues(values url.Values) map[string][]string {
 		result[canonical] = append(result[canonical], entries...)
 	}
 	return result
+}
+
+func rawAPIKey(rawQuery string) (string, bool) {
+	var value string
+	count := 0
+	for _, field := range strings.Split(rawQuery, "&") {
+		rawName, rawValue, _ := strings.Cut(field, "=")
+		name, err := url.QueryUnescape(rawName)
+		if err != nil || !strings.EqualFold(name, "apikey") {
+			continue
+		}
+		count++
+		if count > 1 {
+			return "", false
+		}
+		value, err = url.QueryUnescape(rawValue)
+		if err != nil {
+			return "", false
+		}
+	}
+	return value, count == 1
 }
 
 func malformedQueryParameter(rawQuery string) torznab.Parameter {

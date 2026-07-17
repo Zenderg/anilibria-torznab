@@ -24,23 +24,24 @@ const (
 )
 
 const (
-	maxSeason  = 999
-	maxEpisode = 9999
+	maxSeason        = 999
+	maxEpisode       = 9999
+	regexpWhitespace = `[\p{Z}\t\r\n\f\v\x{0085}]`
 )
 
 var (
-	distributorSuffix = regexp.MustCompile(`(?i)[\p{Z}\t\r\n\f\v]*-[\p{Z}\t\r\n\f\v]*(?:AniLiberty|AniLibria)(?:\.(?:TOP|TV))?[\p{Z}\t\r\n\f\v]*$`)
-	explicitSeason    = regexp.MustCompile(`(?i)(?:Season|Series)[\p{Z}\t\r\n\f\v]+[0-9]+|S[\p{Z}\t\r\n\f\v]*[0-9]+`)
+	distributorSuffix = regexp.MustCompile(`(?i)` + regexpWhitespace + `*-` + regexpWhitespace + `*(?:AniLiberty|AniLibria)(?:\.(?:TOP|TV))?` + regexpWhitespace + `*$`)
+	explicitSeason    = regexp.MustCompile(`(?i)(?:Season|Series)` + regexpWhitespace + `+[0-9]+|S` + regexpWhitespace + `*[0-9]+`)
 	seasonDigits      = regexp.MustCompile(`[0-9]+`)
-	ordinalSeason     = regexp.MustCompile(`(?i)[0-9]+(?:st|nd|rd|th)[\p{Z}\t\r\n\f\v]+Season`)
+	ordinalSeason     = regexp.MustCompile(`(?i)[0-9]+(?:st|nd|rd|th)` + regexpWhitespace + `+Season`)
 	ordinalParts      = regexp.MustCompile(`(?i)^([0-9]+)(st|nd|rd|th)`)
-	trailingYear      = regexp.MustCompile(`[\p{Z}\t\r\n\f\v]*(?:\([0-9]{4}\)|[0-9]{4})[\p{Z}\t\r\n\f\v]*$`)
-	trailingRoman     = regexp.MustCompile(`(?i)(?:^|[\p{Z}\t\r\n\f\v]+)([IVXLCDM]+)$`)
+	trailingYear      = regexp.MustCompile(regexpWhitespace + `*(?:\([0-9]{4}\)|[0-9]{4})` + regexpWhitespace + `*$`)
+	trailingRoman     = regexp.MustCompile(`(?i)(?:^|` + regexpWhitespace + `+)([IVXLCDM]+)$`)
 	bracketGroup      = regexp.MustCompile(`\[([^\[\]]*)\]`)
-	bareEpisode       = regexp.MustCompile(`^([0-9]+)(?:[\p{Z}\t\r\n\f\v]*[-–—][\p{Z}\t\r\n\f\v]*([0-9]+))?$`)
-	prefixedEpisode   = regexp.MustCompile(`(?i)^(?:E|EP)[\p{Z}\t\r\n\f\v]*([0-9]+)(?:[\p{Z}\t\r\n\f\v]*[-–—][\p{Z}\t\r\n\f\v]*([0-9]+))?$`)
-	singleEpisodeWord = regexp.MustCompile(`(?i)^Episode[\p{Z}\t\r\n\f\v]+([0-9]+)$`)
-	rangeEpisodeWord  = regexp.MustCompile(`(?i)^Episodes[\p{Z}\t\r\n\f\v]+([0-9]+)[\p{Z}\t\r\n\f\v]*[-–—][\p{Z}\t\r\n\f\v]*([0-9]+)$`)
+	bareEpisode       = regexp.MustCompile(`^([0-9]+)(?:` + regexpWhitespace + `*[-–—]` + regexpWhitespace + `*([0-9]+))?$`)
+	prefixedEpisode   = regexp.MustCompile(`(?i)^(?:E|EP)` + regexpWhitespace + `*([0-9]+)(?:` + regexpWhitespace + `*[-–—]` + regexpWhitespace + `*([0-9]+))?$`)
+	singleEpisodeWord = regexp.MustCompile(`(?i)^Episode` + regexpWhitespace + `+([0-9]+)$`)
+	rangeEpisodeWord  = regexp.MustCompile(`(?i)^Episodes` + regexpWhitespace + `+([0-9]+)` + regexpWhitespace + `*[-–—]` + regexpWhitespace + `*([0-9]+)$`)
 )
 
 // EpisodeRange is an inclusive episode range. Equal bounds represent one episode.

@@ -96,6 +96,22 @@ func TestParseTitleNormativeExamples(t *testing.T) {
 	}
 }
 
+func TestParseTitleRecognizesNextLineAsUnicodeWhitespace(t *testing.T) {
+	t.Parallel()
+
+	metadata, err := ParseTitle(ReleaseTV, "RU", "Example Season\u00852\u0085-\u0085AniLiberty.TOP\u0085[Episodes\u00851\u0085-\u00852]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOptionalInt(t, metadata.Season, intPointer(2))
+	if metadata.Episodes == nil || metadata.Episodes.Start != 1 || metadata.Episodes.End != 2 {
+		t.Fatalf("episodes = %#v, want 1-2", metadata.Episodes)
+	}
+	if metadata.Title != "Example Season\u00852 S02E01-E02 RUS / RU / Example Season\u00852\u0085-\u0085AniLiberty.TOP\u0085[Episodes\u00851\u0085-\u00852]" {
+		t.Fatalf("title = %q", metadata.Title)
+	}
+}
+
 func TestParseTitleSonarrNarutoRegression(t *testing.T) {
 	t.Parallel()
 	const (

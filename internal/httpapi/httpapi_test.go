@@ -95,6 +95,24 @@ func TestAuthenticationIsFirstAndFailureBodyIsConstant(t *testing.T) {
 	}
 }
 
+func TestMalformedDuplicateAPIKeyFailsAuthenticationBeforeParsing(t *testing.T) {
+	t.Parallel()
+	executor := newFakeExecutor()
+	api := newTestAPI(t, executor, nil, time.Second)
+	queries := []string{
+		"apikey=" + testAPIKey + "&apikey=%ZZ&t=caps",
+		"apikey=%ZZ&apikey=" + testAPIKey + "&t=caps",
+		"apikey=" + testAPIKey + "&%61pikey=%ZZ&t=caps",
+	}
+	for _, rawQuery := range queries {
+		recorder := performRawQuery(api, rawQuery)
+		assertProtocolError(t, recorder, torznab.ErrorIncorrectCredentials, "Incorrect user credentials")
+	}
+	if len(executor.Requests()) != 0 {
+		t.Fatal("executor was called for a malformed duplicate API key")
+	}
+}
+
 func TestCaseInsensitiveParametersAndSearchParsing(t *testing.T) {
 	t.Parallel()
 	executor := newFakeExecutor()
@@ -372,6 +390,29 @@ func TestProtocolErrorMapping(t *testing.T) {
 	}
 }
 
+func TestUnsupportedQueryNumericContinuationsReturnHTTPError(t *testing.T) {
+	t.Parallel()
+	queries := []string{
+		"Title+S02E03.5",
+		"Title+S02E03-04",
+		"Title+Episode+1-2",
+		"Title+Season+2.5",
+		"Title+S02.5E03",
+	}
+	for _, query := range queries {
+		executor := newFakeExecutor()
+		executor.execute = func(_ context.Context, request service.Request) (service.Response, error) {
+			if _, err := torznab.NormalizeQuery(request.Query, request.ExplicitSeason, request.ExplicitEpisode); err != nil {
+				return service.Response{}, &service.Error{Kind: service.ErrorIncorrectParameter, Parameter: "q"}
+			}
+			return executor.response, nil
+		}
+		api := newTestAPI(t, executor, nil, time.Second)
+		recorder := perform(api, http.MethodGet, "/api?apikey="+testAPIKey+"&t=search&q="+query)
+		assertProtocolError(t, recorder, torznab.ErrorIncorrectParameter, "Incorrect parameter: q")
+	}
+}
+
 func TestRequestDeadlineMapsToUpstreamError(t *testing.T) {
 	t.Parallel()
 	executor := newFakeExecutor()
@@ -473,6 +514,7 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 	validExecutor := newFakeExecutor()
 	for _, config := range []Config{
 		{RequestTimeout: time.Second, Executor: validExecutor},
+		{APIKey: string([]byte{0xff}), RequestTimeout: time.Second, Executor: validExecutor},
 		{APIKey: testAPIKey, Executor: validExecutor},
 		{APIKey: testAPIKey, RequestTimeout: time.Second},
 	} {

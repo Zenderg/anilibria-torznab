@@ -40,6 +40,7 @@ git clone --branch v1.0.0 --depth 1 https://github.com/Zenderg/anilibria-torznab
 cd anilibria-torznab
 
 API_KEY="$(openssl rand -hex 32)"
+umask 077
 printf 'API_KEY=%s\nPORT=8080\nIMAGE=ghcr.io/zenderg/anilibria-torznab:v1.0.0\n' "$API_KEY" > .env
 
 docker compose -f compose.release.yaml pull

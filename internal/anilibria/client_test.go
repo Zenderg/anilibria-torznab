@@ -87,6 +87,25 @@ func TestClientRequestsAndDecodesEndpointShapes(t *testing.T) {
 	}
 }
 
+func TestClientPreservesEncodedSlashInBasePath(t *testing.T) {
+	t.Parallel()
+
+	paths := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		paths <- request.URL.EscapedPath()
+		_, _ = io.WriteString(response, `[]`)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL+"/proxy%2Ftenant/api/v1", nil)
+	if _, err := client.SearchReleases(context.Background(), "query"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-paths; got != "/proxy%2Ftenant/api/v1/app/search/releases" {
+		t.Fatalf("escaped request path = %q", got)
+	}
+}
+
 func TestTorrentsByReleaseAcceptsArrayAndSingleton(t *testing.T) {
 	t.Parallel()
 
@@ -391,9 +410,6 @@ func TestSharedAttemptStartIntervalAcrossOperations(t *testing.T) {
 	var mu sync.Mutex
 	var starts []time.Time
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		mu.Lock()
-		starts = append(starts, time.Now())
-		mu.Unlock()
 		switch {
 		case strings.Contains(request.URL.Path, "/app/search/releases"):
 			_, _ = io.WriteString(response, `[]`)
@@ -405,6 +421,11 @@ func TestSharedAttemptStartIntervalAcrossOperations(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestClientWithOptions(t, server.URL+"/", nil, 1<<20, interval, 3, time.Second)
+	client.attemptStarted = func(started time.Time) {
+		mu.Lock()
+		starts = append(starts, started)
+		mu.Unlock()
+	}
 
 	var group sync.WaitGroup
 	group.Add(3)
@@ -418,9 +439,10 @@ func TestSharedAttemptStartIntervalAcrossOperations(t *testing.T) {
 	if len(starts) != 3 {
 		t.Fatalf("attempt starts = %d", len(starts))
 	}
+	slices.SortFunc(starts, time.Time.Compare)
 	for index := 1; index < len(starts); index++ {
-		if spacing := starts[index].Sub(starts[index-1]); spacing < interval-5*time.Millisecond {
-			t.Fatalf("attempt spacing %d = %v, want at least %v", index, spacing, interval-5*time.Millisecond)
+		if spacing := starts[index].Sub(starts[index-1]); spacing < interval {
+			t.Fatalf("limiter reservation spacing %d = %v, want at least %v", index, spacing, interval)
 		}
 	}
 }
@@ -543,6 +565,63 @@ func TestParentCancellationStopsHTTPAttempt(t *testing.T) {
 	}
 }
 
+func TestCancellationAfterBodyReadStopsJSONDecode(t *testing.T) {
+	t.Parallel()
+
+	server := jsonServer(`{"value":1}`)
+	defer server.Close()
+	client := newTestClient(t, server.URL+"/", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bodyRead := make(chan struct{})
+	continueDecode := make(chan struct{})
+	var decoded atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		done <- client.getJSON(ctx, "decode_cancellation", server.URL+"/", func(decodeContext context.Context, body []byte) error {
+			close(bodyRead)
+			<-continueDecode
+			return decodeJSON(decodeContext, body, &decodeProbe{called: &decoded})
+		})
+	}()
+
+	<-bodyRead
+	cancel()
+	close(continueDecode)
+	err := <-done
+	assertClientError(t, err, ErrorClassCanceled, http.StatusOK, 1)
+	if decoded.Load() {
+		t.Fatal("JSON unmarshaler ran after the parent context was canceled")
+	}
+}
+
+func TestNegativeRetryAfterDoesNotUseLocalBackoff(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		response.Header().Set("Retry-After", "-1")
+		response.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL+"/", nil)
+	var backoffCalled atomic.Bool
+	client.randomFloat = func() float64 {
+		backoffCalled.Store(true)
+		return 0
+	}
+
+	_, err := client.SearchReleases(context.Background(), "query")
+	assertClientError(t, err, ErrorClassTemporary, http.StatusServiceUnavailable, maximumAttempts)
+	if calls.Load() != maximumAttempts {
+		t.Fatalf("calls = %d, want %d", calls.Load(), maximumAttempts)
+	}
+	if backoffCalled.Load() {
+		t.Fatal("negative Retry-After used local jittered backoff")
+	}
+}
+
 func TestRetryAfterParsingAndBoundedJitter(t *testing.T) {
 	t.Parallel()
 
@@ -557,7 +636,8 @@ func TestRetryAfterParsingAndBoundedJitter(t *testing.T) {
 		{"zero", "0", 0, true},
 		{"HTTP date", now.Add(8 * time.Second).Format(http.TimeFormat), 8 * time.Second, true},
 		{"expired HTTP date", now.Add(-time.Second).Format(http.TimeFormat), 0, true},
-		{"negative", "-1", 0, false},
+		{"negative", "-1", 0, true},
+		{"negative overflow", "-999999999999999999999999999999", 0, true},
 		{"malformed", "private-value", 0, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -735,6 +815,15 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+type decodeProbe struct {
+	called *atomic.Bool
+}
+
+func (probe *decodeProbe) UnmarshalJSON([]byte) error {
+	probe.called.Store(true)
+	return nil
 }
 
 const testHash = "0123456789abcdef0123456789abcdef01234567"

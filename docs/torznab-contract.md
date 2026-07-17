@@ -30,8 +30,10 @@ ambiguous.
   Authentication still runs first; malformed syntax that cannot be attributed
   safely uses `t` as the generic parameter.
 - Duplicate singleton parameters are an incorrect parameter error; do not pick
-  one silently. `apikey` is the exception: missing or multiple values fail
-  authentication with code `100` before other validation.
+  one silently. `apikey` is the exception: missing or multiple case-insensitive
+  raw fields fail authentication with code `100` before other validation. A raw
+  `apikey` occurrence still counts when its value contains a malformed percent
+  escape.
 - Successful and protocol-error responses use HTTP 200 and
   `Content-Type: application/xml; charset=utf-8`.
 - Non-`GET` methods use HTTP 405. Unknown paths use HTTP 404. These routing
@@ -105,12 +107,15 @@ title contract.
 
 Unambiguous season/episode tokens embedded in `q` MUST supply effective filters
 for both `search` and `tvsearch` when the corresponding explicit parameters are
-absent. Conflicts are error `201`, as defined by the title-normalization
-contract.
+absent. In particular, `q=Title 2x03` is valid and normalizes to query `Title`,
+season 2, and episode 3. Conflicts are error `201`, as defined by the exact query
+grammar in [title-normalization.md](title-normalization.md#query-cleanup).
 
-The first release does not accept absolute episode notation, `2x03`, fractional
-episodes, multi-episode query ranges, or `ep=2/12` as query-parameter values.
-Those forms produce error `201` rather than being guessed.
+The explicit `season` and `ep` parameter values do not accept combined `2x03`
+notation. Absolute episode notation, fractional values, and multi-episode ranges
+such as `ep=2/12` are also invalid explicit values. In `q`, a fractional or range
+continuation of an otherwise recognized technical token, such as `S02E03.5` or
+`Episode 1-2`, produces error `201` for `q` rather than being partially removed.
 
 ## Category filtering
 
