@@ -11,7 +11,7 @@ parsing rules belong in [title-normalization.md](title-normalization.md). Releas
 versioning and image publication belong in [releases.md](releases.md). Temporary
 implementation plans and work logs do not belong here.
 
-**Status:** implemented for `v1.0.2`
+**Status:** implemented for `v1.0.3`
 
 **Last updated:** 2026-07-17
 
