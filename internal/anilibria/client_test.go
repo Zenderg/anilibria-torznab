@@ -249,11 +249,9 @@ func TestRetryAttemptUsesSharedStartIntervalAndCanSucceed(t *testing.T) {
 	const interval = 25 * time.Millisecond
 	var mu sync.Mutex
 	var starts []time.Time
+	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		mu.Lock()
-		starts = append(starts, time.Now())
-		attempt := len(starts)
-		mu.Unlock()
+		attempt := calls.Add(1)
 		if attempt == 1 {
 			response.Header().Set("Retry-After", "0")
 			response.WriteHeader(http.StatusServiceUnavailable)
@@ -263,6 +261,11 @@ func TestRetryAttemptUsesSharedStartIntervalAndCanSucceed(t *testing.T) {
 	}))
 	defer server.Close()
 	client := newTestClientWithOptions(t, server.URL+"/", nil, 1<<20, interval, 1, time.Second)
+	client.attemptStarted = func(started time.Time) {
+		mu.Lock()
+		starts = append(starts, started)
+		mu.Unlock()
+	}
 	ids, err := client.SearchReleases(context.Background(), "query")
 	if err != nil {
 		t.Fatalf("SearchReleases: %v", err)
@@ -272,7 +275,7 @@ func TestRetryAttemptUsesSharedStartIntervalAndCanSucceed(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(starts) != 2 || starts[1].Sub(starts[0]) < interval-5*time.Millisecond {
+	if calls.Load() != 2 || len(starts) != 2 || starts[1].Sub(starts[0]) < interval {
 		t.Fatalf("retry starts = %v", starts)
 	}
 }

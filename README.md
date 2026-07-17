@@ -6,11 +6,11 @@ a Generic Torznab indexer in Prowlarr and Sonarr.
 This is an unofficial community project and is not affiliated with AniLiberty,
 Prowlarr, Sonarr, or their maintainers.
 
-The current stable release is `v1.0.1`. Its deployment artifact is the public
+The current stable release is `v1.0.2`. Its deployment artifact is the public
 multi-platform image:
 
 ```text
-ghcr.io/zenderg/anilibria-torznab:v1.0.1
+ghcr.io/zenderg/anilibria-torznab:v1.0.2
 ```
 
 ## What it does
@@ -36,12 +36,12 @@ Requirements: Docker Engine with the Compose v2 plugin and an unused local port
 (the default is `8080`).
 
 ```bash
-git clone --branch v1.0.1 --depth 1 https://github.com/Zenderg/anilibria-torznab.git
+git clone --branch v1.0.2 --depth 1 https://github.com/Zenderg/anilibria-torznab.git
 cd anilibria-torznab
 
 API_KEY="$(openssl rand -hex 32)"
 umask 077
-printf 'API_KEY=%s\nPORT=8080\nIMAGE=ghcr.io/zenderg/anilibria-torznab:v1.0.1\n' "$API_KEY" > .env
+printf 'API_KEY=%s\nPORT=8080\nIMAGE=ghcr.io/zenderg/anilibria-torznab:v1.0.2\n' "$API_KEY" > .env
 
 docker compose -f compose.release.yaml pull
 docker compose -f compose.release.yaml up -d --wait
