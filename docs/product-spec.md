@@ -203,6 +203,12 @@ Changing the API base URL is the supported way to select the official
 `https://api.anilibria.app/api/v1/` mirror. The service MUST NOT switch domains
 automatically.
 
+The supported Compose files forward every defined application configuration
+variable and omit optional variables that are not defined so application
+defaults remain authoritative. `PORT` selects the published host port.
+`CONTAINER_PORT` is Compose-only and must match the port in `LISTEN_ADDR` when
+that address is changed from `:8080`.
+
 ## Upstream protection
 
 The client MUST use one process-wide limiter for all AniLiberty requests,

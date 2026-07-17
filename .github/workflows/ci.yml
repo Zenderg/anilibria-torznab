@@ -37,6 +37,27 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Validate Compose configuration forwarding
+        env:
+          API_KEY: compose-validation-key
+          IMAGE: ghcr.io/zenderg/anilibria-torznab:validation
+          LISTEN_ADDR: ":9090"
+          CONTAINER_PORT: "9090"
+          PORT: "18080"
+          REQUEST_TIMEOUT: 42s
+          ANILIBRIA_API_BASE_URL: https://example.invalid/api/v1/
+        shell: bash
+        run: |
+          for file in compose.yaml compose.release.yaml; do
+            rendered=$(docker compose -f "$file" config --format json)
+            environment=$(jq -c '.services["anilibria-torznab"].environment' <<< "$rendered")
+            test "$(jq -r '.REQUEST_TIMEOUT' <<< "$environment")" = "42s"
+            test "$(jq -r '.ANILIBRIA_API_BASE_URL' <<< "$environment")" = "https://example.invalid/api/v1/"
+            test "$(jq -r '.LISTEN_ADDR' <<< "$environment")" = ":9090"
+            test "$(jq -r '.LOG_LEVEL == null' <<< "$environment")" = "true"
+            test "$(jq -r '.services["anilibria-torznab"].ports[0].target' <<< "$rendered")" = "9090"
+            test "$(jq -r '.services["anilibria-torznab"].ports[0].published' <<< "$rendered")" = "18080"
+          done
       - name: Build and smoke through Docker Compose
         env:
           API_KEY: ci-test-key

@@ -4,9 +4,24 @@ services:
       context: .
     image: anilibria-torznab:dev
     environment:
-      API_KEY: ${API_KEY:?set API_KEY in the environment or .env}
+      - API_KEY=${API_KEY:?set API_KEY in the environment or .env}
+      - LISTEN_ADDR
+      - ANILIBRIA_API_BASE_URL
+      - ANILIBRIA_SITE_BASE_URL
+      - REQUEST_TIMEOUT
+      - HTTP_TIMEOUT
+      - REQUEST_INTERVAL
+      - MAX_CONCURRENCY
+      - MAX_RELEASES_PER_SEARCH
+      - MAX_RESPONSE_BYTES
+      - SEARCH_CACHE_TTL
+      - TORRENTS_CACHE_TTL
+      - LATEST_CACHE_TTL
+      - NEGATIVE_CACHE_TTL
+      - CACHE_MAX_ENTRIES
+      - LOG_LEVEL
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-8080}:${CONTAINER_PORT:-8080}"
     read_only: true
     cap_drop:
       - ALL

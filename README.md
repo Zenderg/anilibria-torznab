@@ -138,6 +138,14 @@ and `GiB`. The API base URL can be set to the operator-selected official mirror
 automatically. Exact validation bounds are in the
 [product specification](docs/product-spec.md#configuration).
 
+Both Compose files forward any defined optional variables from the shell or
+`.env`; omitted variables remain absent so the application keeps its defaults.
+`PORT` controls the published host port. If `LISTEN_ADDR` uses a container port
+other than `8080`, set the Compose-only `CONTAINER_PORT` to the same port (for
+example, `LISTEN_ADDR=:9090` and `CONTAINER_PORT=9090`). The listen address must
+remain reachable from the container network rather than binding only to
+`127.0.0.1`.
+
 ## Upgrade and rollback
 
 Edit only the immutable `IMAGE` tag in `.env`, then recreate the service:
